@@ -91,23 +91,27 @@ cp .env.example .env
 
 ## Running
 
-Start the backend and frontend in two separate terminals:
-
-**Terminal 1 -- Backend:**
+Start both servers with a single command:
 
 ```bash
-source venv/bin/activate
-uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+./scripts/dev.sh
 ```
 
-**Terminal 2 -- Frontend:**
+Press Ctrl+C to stop both servers.
+
+Open http://127.0.0.1:5173 in your browser.
+
+If you prefer to run them separately (e.g. for debugging), use two terminals:
 
 ```bash
+# Terminal 1 -- Backend
+source venv/bin/activate
+uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+
+# Terminal 2 -- Frontend
 cd frontend
 npm run dev
 ```
-
-Open http://127.0.0.1:5173 in your browser.
 
 ## Connecting your Instagram account
 
