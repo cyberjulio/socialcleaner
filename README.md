@@ -169,6 +169,14 @@ socialcleaner/
 ## Important notes
 
 - This tool automates actions on your own account. Use it responsibly.
+- When you connect an account, SocialCleaner captures the user-agent
+  string from the browser you use to access the dashboard. The headless
+  browser that performs automation then uses that exact same user-agent.
+  This means the requests look identical to your normal browsing session,
+  reducing the chance of detection by the platform.
+  For best results, connect your account using the same browser where you
+  are logged into Instagram (e.g. if you use Firefox for Instagram, open
+  the SocialCleaner dashboard in Firefox too).
 - Instagram may temporarily restrict your account if you remove content
   too quickly. SocialCleaner includes rate limiting and automatic pauses,
   but there is always some risk.
