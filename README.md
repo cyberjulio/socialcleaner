@@ -185,6 +185,73 @@ socialcleaner/
 - The database and browser data are stored locally. Back up `cleaner.db`
   if you want to preserve your task history.
 
+## Rate limiting and anti-detection
+
+SocialCleaner is designed to run unattended for days, processing large
+volumes of likes and comments without triggering Instagram's automation
+detection. The rate limiting strategy is based on community research
+across automation forums, GitHub projects, and real-world experience.
+
+### How it works
+
+Tasks process items in batches of 20-25 (matching Instagram's own
+native UI cap of 25 selections). Between each batch, the tool waits a
+random 20-45 seconds before starting the next one. Individual clicks
+within a batch are spaced 200-600ms apart with randomization to avoid
+fixed-timing detection.
+
+### Session and daily limits
+
+| Parameter              | Value            | Purpose                                      |
+|------------------------|------------------|----------------------------------------------|
+| Batch size             | 20-25 (random)   | Matches Instagram's native selection cap      |
+| Click delay            | 200-600ms        | Randomized per click to mimic human input     |
+| Inter-batch delay      | 20-45 seconds    | Community-recommended safe window             |
+| Reading pause          | 20% chance, 3-8s | Simulates human scanning between actions      |
+| Session active limit   | 50 minutes       | Max continuous operation before mandatory rest |
+| Session rest           | 30-45 minutes    | Break between active sessions                 |
+| Daily cap              | 800 actions      | Under the moderate-risk threshold of 1,000    |
+
+### Action block detection
+
+After each batch, SocialCleaner checks the page for Instagram block
+indicators ("Try Again Later", "Action Blocked", "We restrict certain
+activity"). If detected, all activity pauses for 24 hours to prevent
+escalation from a temporary soft block to a longer restriction.
+
+### Estimated duration
+
+When a task starts, SocialCleaner calculates an estimated duration based
+on the number of items, batch processing time, inter-batch delays,
+session rests, and the daily cap. For example:
+
+- 80 items: approximately 28 minutes
+- 800 items: approximately 1 day
+- 5,000 items: approximately 7 days (processing 800 items/day)
+
+### Instagram rate limit reference
+
+These numbers are community-derived (Instagram does not publish official
+limits) and represent conservative safe thresholds:
+
+| Action type     | Safe per hour | Safe per day | Risk threshold |
+|-----------------|---------------|--------------|----------------|
+| Likes / Unlikes | 30-50         | 500-1,000    | >1,000/day     |
+| Comments        | 20            | 150-200      | >200/day       |
+| Follows         | 30            | 500          | >500/day       |
+| Combined total  | --            | 300-800      | >1,000/day     |
+
+Action blocks escalate with repeated violations:
+
+1. Soft block (single action type, few hours to 24h)
+2. Temporary block (24-48h, shows expiration)
+3. Extended block (days to 2 weeks, no expiration shown)
+4. Full restriction (up to 30 days)
+5. Suspension (180 days or permanent)
+
+Continuing automated actions during a block extends its duration.
+SocialCleaner detects blocks and stops automatically to avoid this.
+
 ## License
 
 This project is licensed under [CC BY-NC 4.0](LICENSE). You are free to
