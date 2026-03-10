@@ -153,9 +153,11 @@ class InstagramClient(PlatformClient):
     async def _batch_delete_comments(self) -> bool:
         """
         Delete comments in tiny batches (1-3 at a time), verifying each round.
-        If verification fails, pause 5 min. If it fails again, stop entirely.
+        Uses native mouse clicks (not JS .click()) and viewport-center matching
+        for confirmation dialogs.
         """
         total_deleted = 0
+        consecutive_failures = 0
         page = await self.context.new_page()
 
         try:
@@ -173,174 +175,177 @@ class InstagramClient(PlatformClient):
             while not self._cancelled:
                 await self._check_cancelled()
 
-                # Random batch size: 1–3
                 batch_size = random.randint(1, 3)
-                await self._log(f"Selecting {batch_size} comment(s) to delete...")
+                await self._log(f"Removing {batch_size} comment(s)...")
 
-                # Step 1: Enter selection mode
-                select_ok = await page.evaluate("""
+                # Step 1: Click Select (native click)
+                select_pos = await page.evaluate("""
                     () => {
                         const els = document.querySelectorAll('span, button, [role="button"], a');
                         for (const el of els) {
                             const text = el.textContent?.trim().toLowerCase();
                             if (text === 'select' || text === 'selecionar') {
-                                el.click();
-                                return true;
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                                }
                             }
                         }
-                        return false;
+                        return null;
                     }
                 """)
-                if not select_ok:
+                if not select_pos:
                     await self._log("Could not find 'Select' button", "error")
                     break
 
-                await page.wait_for_timeout(random.uniform(800, 1500))
+                await page.mouse.click(select_pos["x"], select_pos["y"])
+                await page.wait_for_timeout(1500)
 
-                # Step 2: Click checkboxes and collect account names
-                result = await page.evaluate("""
-                    (maxSelect) => {
-                        const checkboxes = document.querySelectorAll(
-                            '[role="checkbox"], input[type="checkbox"], ' +
-                            '[aria-label*="checkbox"], [aria-label*="select"]'
-                        );
-                        let count = 0;
-                        const names = [];
-                        for (const cb of checkboxes) {
-                            if (count >= maxSelect) break;
-                            const isChecked = cb.getAttribute('aria-checked') === 'true' || cb.checked === true;
-                            if (!isChecked) {
-                                cb.click();
-                                count++;
-                                const row = cb.closest('[role="listitem"], [role="row"], div[style]') || cb.parentElement?.parentElement;
-                                if (row) {
-                                    const links = row.querySelectorAll('a[href*="/"]');
-                                    for (const link of links) {
-                                        const href = link.getAttribute('href');
-                                        const match = href?.match(/^\\/([A-Za-z0-9_.]+)\\/?$/);
-                                        if (match && !['p','reel','explore','accounts','your_activity'].includes(match[1])) {
-                                            names.push('@' + match[1]);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        return {count, names};
-                    }
-                """, batch_size)
-                selected = result["count"]
-                selected_names = result.get("names", [])
-
-                if selected == 0:
-                    await self._log("Could not select any checkboxes, trying row clicks...")
-                    result = await page.evaluate("""
-                        (maxSelect) => {
-                            const rows = document.querySelectorAll('[role="listitem"], [role="row"]');
-                            let count = 0;
-                            const names = [];
-                            for (const row of rows) {
-                                if (count >= maxSelect) break;
-                                const text = row.innerText?.trim();
-                                if (text && text.length > 5) {
-                                    row.click();
-                                    count++;
-                                    const links = row.querySelectorAll('a[href*="/"]');
-                                    for (const link of links) {
-                                        const href = link.getAttribute('href');
-                                        const match = href?.match(/^\\/([A-Za-z0-9_.]+)\\/?$/);
-                                        if (match && !['p','reel','explore','accounts','your_activity'].includes(match[1])) {
-                                            names.push('@' + match[1]);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            return {count, names};
-                        }
-                    """, batch_size)
-                    selected = result["count"]
-                    selected_names = result.get("names", [])
-
-                if selected == 0:
-                    await self._log("Could not select any comments", "error")
-                    break
-
-                names_str = ", ".join(selected_names) if selected_names else "unknown"
-                await self._log(f"Selected {selected} comment(s) on: {names_str}")
-                await page.wait_for_timeout(random.uniform(500, 1000))
-
-                # Step 3: Click Delete
-                delete_ok = await page.evaluate("""
+                # Step 2: Click checkboxes (native clicks)
+                checkboxes = await page.evaluate("""
                     () => {
-                        const buttons = document.querySelectorAll('button, [role="button"]');
-                        for (const btn of buttons) {
-                            const text = btn.innerText?.trim().toLowerCase();
-                            if (text === 'delete' || text === 'excluir') {
-                                btn.click();
-                                return true;
+                        const cbs = document.querySelectorAll(
+                            '[role="checkbox"], input[type="checkbox"], ' +
+                            '[aria-label*="checkbox"], [aria-label*="select"], ' +
+                            '[aria-label*="Toggle"]'
+                        );
+                        const results = [];
+                        for (const cb of cbs) {
+                            const rect = cb.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0 && rect.y > 100) {
+                                results.push({
+                                    x: rect.x + rect.width/2,
+                                    y: rect.y + rect.height/2
+                                });
                             }
                         }
-                        return false;
+                        return results;
                     }
                 """)
-                if not delete_ok:
+
+                actual_batch = min(batch_size, len(checkboxes))
+                if actual_batch == 0:
+                    await self._log("No checkboxes found — done or page error", "warn")
+                    break
+
+                for i in range(actual_batch):
+                    await page.mouse.click(checkboxes[i]["x"], checkboxes[i]["y"])
+                    await page.wait_for_timeout(500)
+
+                await self._log(f"Selected {actual_batch} comment(s)")
+                await page.wait_for_timeout(500)
+
+                # Step 3: Click Delete (bottom bar, native click)
+                delete_pos = await page.evaluate("""
+                    () => {
+                        const els = document.querySelectorAll('span, div, button');
+                        for (const el of els) {
+                            const text = el.textContent?.trim();
+                            const tag = el.tagName.toLowerCase();
+                            if (tag === 'title') continue;
+                            if (text === 'Delete' || text === 'Excluir') {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if not delete_pos:
                     await self._log("Could not find Delete button", "error")
                     break
 
-                await page.wait_for_timeout(random.uniform(1500, 2500))
+                await page.mouse.click(delete_pos["x"], delete_pos["y"])
+                await page.wait_for_timeout(2000)
 
-                # Step 4: Confirm deletion
-                await page.evaluate("""
+                # Step 4: Click confirmation Delete (closest to viewport center)
+                confirm_pos = await page.evaluate("""
                     () => {
-                        const buttons = document.querySelectorAll('button, [role="button"]');
-                        for (const btn of buttons) {
-                            const text = btn.innerText?.trim().toLowerCase();
-                            if (text === 'delete' || text === 'excluir' || text === 'confirm') {
-                                btn.click();
+                        const allEls = document.querySelectorAll('button, [role="button"], span, div, a');
+                        const candidates = [];
+                        for (const el of allEls) {
+                            const tag = el.tagName.toLowerCase();
+                            if (tag === 'title' || tag === 'svg') continue;
+                            const text = el.textContent?.trim();
+                            if (text !== 'Delete' && text !== 'Excluir') continue;
+                            if (el.children.length > 1) continue;
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width <= 0 || rect.height <= 0 || rect.height > 80) continue;
+                            const cy = window.innerHeight / 2;
+                            const cx = window.innerWidth / 2;
+                            const dist = Math.sqrt(
+                                Math.pow(rect.x + rect.width/2 - cx, 2) +
+                                Math.pow(rect.y + rect.height/2 - cy, 2)
+                            );
+                            candidates.push({x: rect.x + rect.width/2, y: rect.y + rect.height/2, dist});
+                        }
+                        candidates.sort((a, b) => a.dist - b.dist);
+                        return candidates.length > 0 ? candidates[0] : null;
+                    }
+                """)
+
+                if not confirm_pos:
+                    await self._log("No confirmation dialog found", "warn")
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        await self._log("Too many failures, stopping", "error")
+                        break
+                    await self._navigate_to_comments(page)
+                    count_before = await self._count_comments(page)
+                    continue
+
+                await page.mouse.click(confirm_pos["x"], confirm_pos["y"])
+                await page.wait_for_timeout(3000)
+
+                # Step 5: Verify dialog dismissed (confirm click worked)
+                dialog_still_open = await page.evaluate("""
+                    () => {
+                        const els = document.querySelectorAll('*');
+                        for (const el of els) {
+                            const text = el.textContent?.trim();
+                            if (text === 'Delete this comment?' || text === 'Excluir este comentário?')
                                 return true;
-                            }
                         }
                         return false;
                     }
                 """)
 
-                await self._log("Deletion confirmed. Waiting for page to update...")
-                await page.wait_for_timeout(random.uniform(3000, 5000))
+                if dialog_still_open:
+                    consecutive_failures += 1
+                    await self._log(f"Confirm click didn't dismiss dialog, failure {consecutive_failures}/3", "warn")
+                    if consecutive_failures >= 3:
+                        await self._log("Too many confirm failures, stopping", "error")
+                        break
+                    await self._navigate_to_comments(page)
+                    continue
 
-                # Step 5: Reload and verify
+                # Dialog dismissed = deletion succeeded. Count is unreliable
+                # due to Instagram paginating in older comments, so trust the flow.
+                total_deleted += actual_batch
+                consecutive_failures = 0
+                await self._report_progress(deleted=total_deleted)
+                await self._log(f"Deleted {actual_batch} comment(s). Total deleted: {total_deleted}")
+
+                # Reload page for next batch
                 if not await self._navigate_to_comments(page):
-                    await self._log("Page failed to load after deletion — Instagram may be blocking", "error")
-                    # Pause 5 minutes and retry
+                    await self._log("Page failed to load after deletion", "error")
                     verified = await self._pause_and_retry(page)
                     if not verified:
                         return total_deleted > 0
-                    count_after = await self._count_comments(page)
-                else:
-                    count_after = await self._count_comments(page)
 
-                actually_deleted = count_before - count_after
+                # Check if any comments remain
+                count_after = await self._count_comments(page)
+                if count_after == 0:
+                    await self._log("All comments deleted!")
+                    return True
 
-                if actually_deleted > 0:
-                    total_deleted += actually_deleted
-                    await self._report_progress(deleted=total_deleted)
-                    await self._log(f"Verified: {actually_deleted} comment(s) removed. Remaining: {count_after}. Total deleted: {total_deleted}")
-                    count_before = count_after
+                await self._log(f"Comments on page: {count_after}. Continuing...")
 
-                    if count_after == 0:
-                        await self._log("All comments deleted!")
-                        return True
-
-                    # Human-like delay between batches: 20–40 seconds
-                    delay = random.uniform(20, 40)
-                    await self._log(f"Waiting {delay:.0f}s before next batch...")
-                    await asyncio.sleep(delay)
-                else:
-                    await self._log(f"Deletion not verified (count still {count_after}). Pausing 5 minutes...", "warn")
-                    verified = await self._pause_and_retry(page)
-                    if not verified:
-                        return total_deleted > 0
-                    count_before = await self._count_comments(page)
+                # Random delay between batches (2-5 seconds)
+                delay = random.uniform(2, 5)
+                await page.wait_for_timeout(int(delay * 1000))
 
             await self._log(f"Batch delete finished. Total deleted: {total_deleted}")
             return total_deleted > 0
