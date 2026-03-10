@@ -175,8 +175,8 @@ class InstagramClient(PlatformClient):
             while not self._cancelled:
                 await self._check_cancelled()
 
-                batch_size = random.randint(1, 3)
-                await self._log(f"Removing {batch_size} comment(s)...")
+                batch_size = random.randint(20, 25)
+                await self._log(f"Removing up to {batch_size} comment(s)...")
 
                 # Step 1: Click Select (native click)
                 select_pos = await page.evaluate("""
@@ -202,35 +202,56 @@ class InstagramClient(PlatformClient):
                 await page.wait_for_timeout(1500)
 
                 # Step 2: Click checkboxes (native clicks)
-                checkboxes = await page.evaluate("""
-                    () => {
-                        const cbs = document.querySelectorAll(
-                            '[role="checkbox"], input[type="checkbox"], ' +
-                            '[aria-label*="checkbox"], [aria-label*="select"], ' +
-                            '[aria-label*="Toggle"]'
-                        );
-                        const results = [];
-                        for (const cb of cbs) {
-                            const rect = cb.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0 && rect.y > 100) {
-                                results.push({
-                                    x: rect.x + rect.width/2,
-                                    y: rect.y + rect.height/2
-                                });
+                # Scroll down to load enough checkboxes for the batch
+                selected_count = 0
+                scroll_attempts = 0
+                while selected_count < batch_size and scroll_attempts < 10:
+                    checkboxes = await page.evaluate("""
+                        () => {
+                            const cbs = document.querySelectorAll(
+                                '[role="checkbox"], input[type="checkbox"], ' +
+                                '[aria-label*="checkbox"], [aria-label*="select"], ' +
+                                '[aria-label*="Toggle"]'
+                            );
+                            const results = [];
+                            for (const cb of cbs) {
+                                const checked = cb.getAttribute('aria-checked') === 'true' || cb.checked === true;
+                                if (checked) continue;
+                                const rect = cb.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0 && rect.y > 100) {
+                                    results.push({
+                                        x: rect.x + rect.width/2,
+                                        y: rect.y + rect.height/2
+                                    });
+                                }
                             }
+                            return results;
                         }
-                        return results;
-                    }
-                """)
+                    """)
 
-                actual_batch = min(batch_size, len(checkboxes))
+                    if len(checkboxes) == 0 and selected_count == 0:
+                        break  # No checkboxes at all
+
+                    # Click unchecked checkboxes visible on screen
+                    for cb in checkboxes:
+                        if selected_count >= batch_size:
+                            break
+                        await page.mouse.click(cb["x"], cb["y"])
+                        selected_count += 1
+                        await page.wait_for_timeout(300)
+
+                    if selected_count >= batch_size:
+                        break
+
+                    # Scroll down to reveal more
+                    await page.evaluate("window.scrollBy(0, 400)")
+                    await page.wait_for_timeout(1000)
+                    scroll_attempts += 1
+
+                actual_batch = selected_count
                 if actual_batch == 0:
                     await self._log("No checkboxes found — done or page error", "warn")
                     break
-
-                for i in range(actual_batch):
-                    await page.mouse.click(checkboxes[i]["x"], checkboxes[i]["y"])
-                    await page.wait_for_timeout(500)
 
                 await self._log(f"Selected {actual_batch} comment(s)")
                 await page.wait_for_timeout(500)
@@ -343,8 +364,19 @@ class InstagramClient(PlatformClient):
 
                 await self._log(f"Comments on page: {count_after}. Continuing...")
 
-                # Random delay between batches (2-5 seconds)
-                delay = random.uniform(2, 5)
+                # Rest pause every 300 deletions to simulate human behavior
+                if total_deleted > 0 and total_deleted % 300 < actual_batch:
+                    rest_minutes = random.uniform(3, 6)
+                    await self._log(f"Reached {total_deleted} deletions. Resting for {rest_minutes:.1f} minutes...")
+                    rest_seconds = int(rest_minutes * 60)
+                    for i in range(0, rest_seconds, 30):
+                        await self._check_cancelled()
+                        remaining = rest_seconds - i
+                        await self._log(f"Resting... {remaining}s remaining")
+                        await asyncio.sleep(min(30, remaining))
+
+                # Random delay between batches (5-15 seconds)
+                delay = random.uniform(5, 15)
                 await page.wait_for_timeout(int(delay * 1000))
 
             await self._log(f"Batch delete finished. Total deleted: {total_deleted}")
@@ -613,8 +645,8 @@ class InstagramClient(PlatformClient):
             while not self._cancelled:
                 await self._check_cancelled()
 
-                batch_size = random.randint(1, 3)
-                await self._log(f"Removing {batch_size} like(s)...")
+                batch_size = random.randint(20, 25)
+                await self._log(f"Removing up to {batch_size} like(s)...")
 
                 # Get fingerprints before this batch
                 fp_before = await self._get_grid_fingerprints(page)
@@ -642,48 +674,72 @@ class InstagramClient(PlatformClient):
                 await page.mouse.click(select_pos["x"], select_pos["y"])
                 await page.wait_for_timeout(1500)
 
-                # Step 2: Click thumbnails (batch_size items, top-left first)
-                grid_items = await page.evaluate("""
-                    () => {
-                        const result = [];
-                        const imgs = document.querySelectorAll('img');
-                        for (const img of imgs) {
-                            const alt = img.alt || '';
-                            const src = img.src || '';
-                            const w = img.width || img.naturalWidth || 0;
-                            if (w < 100) continue;
-                            if (alt.includes('profile picture')) continue;
-                            if (src.includes('static')) continue;
-                            const rect = img.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0 && rect.y > 0) {
-                                result.push({
-                                    src_file: src.split('?')[0].split('/').pop() || '',
-                                    x: rect.x + rect.width / 2,
-                                    y: rect.y + rect.height / 2,
-                                });
+                # Step 2: Click thumbnails (batch_size items, scroll to load more)
+                selected_files = []
+                scroll_attempts = 0
+                while len(selected_files) < batch_size and scroll_attempts < 10:
+                    grid_items = await page.evaluate("""
+                        () => {
+                            const result = [];
+                            const imgs = document.querySelectorAll('img');
+                            for (const img of imgs) {
+                                const alt = img.alt || '';
+                                const src = img.src || '';
+                                const w = img.width || img.naturalWidth || 0;
+                                if (w < 100) continue;
+                                if (alt.includes('profile picture')) continue;
+                                if (src.includes('static')) continue;
+                                const rect = img.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0 && rect.y > 0) {
+                                    // Check if this thumbnail has a selected overlay
+                                    const parent = img.closest('div');
+                                    const isSelected = parent?.querySelector('[aria-checked="true"]') ||
+                                                      img.style.opacity === '0.5' ||
+                                                      parent?.style.opacity === '0.5';
+                                    result.push({
+                                        src_file: src.split('?')[0].split('/').pop() || '',
+                                        x: rect.x + rect.width / 2,
+                                        y: rect.y + rect.height / 2,
+                                        selected: !!isSelected,
+                                    });
+                                }
                             }
+                            result.sort((a, b) => {
+                                const rowA = Math.floor(a.y / 100);
+                                const rowB = Math.floor(b.y / 100);
+                                if (rowA !== rowB) return rowA - rowB;
+                                return a.x - b.x;
+                            });
+                            return result;
                         }
-                        result.sort((a, b) => {
-                            const rowA = Math.floor(a.y / 100);
-                            const rowB = Math.floor(b.y / 100);
-                            if (rowA !== rowB) return rowA - rowB;
-                            return a.x - b.x;
-                        });
-                        return result;
-                    }
-                """)
+                    """)
 
-                if len(grid_items) == 0:
+                    if len(grid_items) == 0 and len(selected_files) == 0:
+                        break  # No thumbnails at all
+
+                    # Click unselected thumbnails
+                    already_selected = set(selected_files)
+                    for item in grid_items:
+                        if len(selected_files) >= batch_size:
+                            break
+                        if item["src_file"] in already_selected:
+                            continue
+                        await page.mouse.click(item["x"], item["y"])
+                        selected_files.append(item["src_file"])
+                        await page.wait_for_timeout(300)
+
+                    if len(selected_files) >= batch_size:
+                        break
+
+                    # Scroll down to load more thumbnails
+                    await page.evaluate("window.scrollBy(0, 400)")
+                    await page.wait_for_timeout(1000)
+                    scroll_attempts += 1
+
+                actual_batch = len(selected_files)
+                if actual_batch == 0:
                     await self._log("No grid thumbnails found — done or page error", "warn")
                     break
-
-                actual_batch = min(batch_size, len(grid_items))
-                selected_files = []
-                for i in range(actual_batch):
-                    item = grid_items[i]
-                    await page.mouse.click(item["x"], item["y"])
-                    selected_files.append(item["src_file"])
-                    await page.wait_for_timeout(500)
 
                 await self._log(f"Selected {actual_batch} thumbnail(s)")
                 await page.wait_for_timeout(500)
@@ -777,8 +833,19 @@ class InstagramClient(PlatformClient):
                             break
                         consecutive_failures = 0
 
-                # Random delay between batches (2-5 seconds)
-                delay = random.uniform(2, 5)
+                # Rest pause every 300 unlikes to simulate human behavior
+                if total_unliked > 0 and total_unliked % 300 < actual_batch:
+                    rest_minutes = random.uniform(3, 6)
+                    await self._log(f"Reached {total_unliked} unlikes. Resting for {rest_minutes:.1f} minutes...")
+                    rest_seconds = int(rest_minutes * 60)
+                    for i in range(0, rest_seconds, 30):
+                        await self._check_cancelled()
+                        remaining = rest_seconds - i
+                        await self._log(f"Resting... {remaining}s remaining")
+                        await asyncio.sleep(min(30, remaining))
+
+                # Random delay between batches (5-15 seconds)
+                delay = random.uniform(5, 15)
                 await page.wait_for_timeout(int(delay * 1000))
 
             await self._log(f"Batch unlike finished. Total unliked: {total_unliked}")
