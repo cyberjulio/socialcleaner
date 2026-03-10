@@ -22,7 +22,7 @@ class RateLimiter:
     """
 
     DAILY_CAPS = {
-        "instagram": 400,
+        "instagram": 800,
         "twitter": 350,
     }
 

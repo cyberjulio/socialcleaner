@@ -1,8 +1,10 @@
 import json
+import math
 import re
 import logging
 import asyncio
 import random
+import time
 from typing import AsyncIterator
 from playwright.async_api import BrowserContext, Page
 from backend.platforms.base import PlatformClient
@@ -11,6 +13,22 @@ logger = logging.getLogger(__name__)
 
 IG_BASE = "https://www.instagram.com"
 
+# ── Rate limiting constants (tuned from community research) ────────────
+BATCH_SIZE_MIN = 20
+BATCH_SIZE_MAX = 25
+INTER_BATCH_DELAY_MIN = 20   # seconds
+INTER_BATCH_DELAY_MAX = 45
+CLICK_DELAY_MIN = 200         # ms between checkbox/thumbnail clicks
+CLICK_DELAY_MAX = 600
+READING_PAUSE_CHANCE = 0.20   # 20% chance of a "reading pause" per batch
+READING_PAUSE_MIN = 3         # seconds
+READING_PAUSE_MAX = 8
+SESSION_ACTIVE_MINUTES = 50   # max active time before session rest
+SESSION_REST_MIN = 30         # minutes
+SESSION_REST_MAX = 45
+DAILY_CAP = 800               # max actions per 24h rolling window
+ACTION_BLOCK_COOLDOWN_H = 24  # hours to pause on action block
+
 
 class InstagramClient(PlatformClient):
     def __init__(self, context: BrowserContext, cookies: dict[str, str]):
@@ -18,6 +36,11 @@ class InstagramClient(PlatformClient):
         self.csrf_token = cookies.get("csrftoken", "")
         self.user_id = cookies.get("ds_user_id", "")
         self._cancelled = False
+        # Rate limiting state
+        self._session_start = time.time()
+        self._session_actions = 0
+        self._daily_actions = 0
+        self._daily_reset = time.time()
 
     def cancel(self):
         self._cancelled = True
@@ -25,6 +48,135 @@ class InstagramClient(PlatformClient):
     async def _check_cancelled(self):
         if self._cancelled:
             raise asyncio.CancelledError("Task cancelled by user")
+
+    # ── Rate limiting helpers ─────────────────────────────────────────
+
+    def _estimate_duration(self, total_items: int) -> str:
+        """Calculate human-readable ETA for a task."""
+        avg_batch = (BATCH_SIZE_MIN + BATCH_SIZE_MAX) / 2
+        avg_batch_time_s = (
+            avg_batch * (CLICK_DELAY_MIN + CLICK_DELAY_MAX) / 2 / 1000  # click delays
+            + 1.5   # Select click + wait
+            + 2.0   # Delete/Unlike click + wait
+            + 3.0   # Confirm click + wait
+            + 3.0   # Page reload
+            + (INTER_BATCH_DELAY_MIN + INTER_BATCH_DELAY_MAX) / 2  # inter-batch delay
+            + READING_PAUSE_CHANCE * (READING_PAUSE_MIN + READING_PAUSE_MAX) / 2  # avg reading pause
+        )
+        total_batches = math.ceil(total_items / avg_batch)
+        active_time_s = total_batches * avg_batch_time_s
+
+        # Session rests: every SESSION_ACTIVE_MINUTES, rest for avg 37.5 min
+        active_per_session = SESSION_ACTIVE_MINUTES * 60
+        sessions_needed = math.ceil(active_time_s / active_per_session)
+        avg_rest = (SESSION_REST_MIN + SESSION_REST_MAX) / 2 * 60
+        rest_time_s = max(0, sessions_needed - 1) * avg_rest
+
+        # Daily cap
+        days_needed = math.ceil(total_items / DAILY_CAP)
+
+        if days_needed <= 1:
+            total_time_s = active_time_s + rest_time_s
+            if total_time_s < 3600:
+                return f"~{int(total_time_s / 60)} minutes"
+            return f"~{total_time_s / 3600:.1f} hours"
+
+        return f"~{days_needed} days (processing ~{DAILY_CAP} items/day)"
+
+    async def _check_action_blocked(self, page: Page) -> bool:
+        """Check if Instagram is showing an action block message."""
+        blocked = await page.evaluate("""
+            () => {
+                const text = document.body?.innerText || '';
+                const lower = text.toLowerCase();
+                return lower.includes('try again later') ||
+                       lower.includes('action blocked') ||
+                       lower.includes('we restrict certain activity') ||
+                       lower.includes('temporarily blocked') ||
+                       lower.includes('tente novamente mais tarde') ||
+                       lower.includes('ação bloqueada');
+            }
+        """)
+        return blocked
+
+    async def _handle_action_block(self):
+        """Pause for ACTION_BLOCK_COOLDOWN_H hours when blocked."""
+        cooldown_s = ACTION_BLOCK_COOLDOWN_H * 3600
+        await self._log(
+            f"Action blocked by Instagram. Pausing for {ACTION_BLOCK_COOLDOWN_H}h to avoid escalation.",
+            "error",
+        )
+        for i in range(0, cooldown_s, 60):
+            await self._check_cancelled()
+            remaining_h = (cooldown_s - i) / 3600
+            if i % 1800 == 0:  # log every 30 min
+                await self._log(f"Action block cooldown: {remaining_h:.1f}h remaining", "warn")
+            await asyncio.sleep(60)
+        await self._log("Action block cooldown complete. Resuming...")
+
+    async def _reading_pause(self):
+        """Random 'reading pause' — 20% chance, 3-8 seconds."""
+        if random.random() < READING_PAUSE_CHANCE:
+            pause = random.uniform(READING_PAUSE_MIN, READING_PAUSE_MAX)
+            await asyncio.sleep(pause)
+
+    async def _inter_batch_delay(self):
+        """Random delay between batches (20-45 seconds)."""
+        delay = random.uniform(INTER_BATCH_DELAY_MIN, INTER_BATCH_DELAY_MAX)
+        await asyncio.sleep(delay)
+
+    async def _check_session_limits(self):
+        """Enforce session time limits and daily cap. Returns False if daily cap hit and reset waited."""
+        await self._check_cancelled()
+
+        # Daily cap check
+        if time.time() - self._daily_reset > 86400:
+            self._daily_actions = 0
+            self._daily_reset = time.time()
+
+        if self._daily_actions >= DAILY_CAP:
+            wait_s = 86400 - (time.time() - self._daily_reset)
+            wait_h = max(wait_s, 3600) / 3600
+            await self._log(
+                f"Daily cap reached ({DAILY_CAP} actions). Waiting {wait_h:.1f}h until next window.",
+                "warn",
+            )
+            # Wait in 5-minute increments so cancel can interrupt
+            for i in range(0, int(max(wait_s, 3600)), 300):
+                await self._check_cancelled()
+                remaining_h = (max(wait_s, 3600) - i) / 3600
+                if i % 1800 == 0:
+                    await self._log(f"Daily cap wait: {remaining_h:.1f}h remaining")
+                await asyncio.sleep(300)
+            self._daily_actions = 0
+            self._daily_reset = time.time()
+            self._session_start = time.time()
+            self._session_actions = 0
+
+        # Session time limit check
+        session_elapsed = (time.time() - self._session_start) / 60
+        if session_elapsed >= SESSION_ACTIVE_MINUTES:
+            rest_min = random.uniform(SESSION_REST_MIN, SESSION_REST_MAX)
+            await self._log(
+                f"Session active for {session_elapsed:.0f}min. Resting for {rest_min:.0f} minutes...",
+                "warn",
+            )
+            rest_s = int(rest_min * 60)
+            for i in range(0, rest_s, 30):
+                await self._check_cancelled()
+                remaining = rest_s - i
+                if i % 300 == 0:
+                    await self._log(f"Session rest: {remaining // 60}min remaining")
+                await asyncio.sleep(min(30, remaining))
+            # Reset session counters
+            self._session_start = time.time()
+            self._session_actions = 0
+            await self._log("Session rest complete. Resuming...")
+
+    def _record_actions(self, count: int):
+        """Record that `count` actions were performed."""
+        self._session_actions += count
+        self._daily_actions += count
 
     async def _new_page(self) -> Page:
         """Create a new page with IG session loaded."""
@@ -152,9 +304,8 @@ class InstagramClient(PlatformClient):
 
     async def _batch_delete_comments(self) -> bool:
         """
-        Delete comments in tiny batches (1-3 at a time), verifying each round.
-        Uses native mouse clicks (not JS .click()) and viewport-center matching
-        for confirmation dialogs.
+        Delete comments in batches of 20-25, with session/daily limits,
+        action block detection, and human-like timing.
         """
         total_deleted = 0
         consecutive_failures = 0
@@ -166,19 +317,24 @@ class InstagramClient(PlatformClient):
                 return False
 
             count_before = await self._count_comments(page)
-            await self._log(f"Starting batch delete. Comments on page: {count_before}")
+            await self._log(f"Comments on page: {count_before}")
 
             if count_before == 0:
                 await self._log("No comments to delete")
                 return True
 
+            # ETA estimate
+            eta = self._estimate_duration(count_before)
+            await self._log(f"Estimated duration: {eta}")
+
             while not self._cancelled:
-                await self._check_cancelled()
+                # Enforce session time and daily cap limits
+                await self._check_session_limits()
 
-                batch_size = random.randint(20, 25)
-                await self._log(f"Removing up to {batch_size} comment(s)...")
+                batch_size = random.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
+                await self._log(f"Batch: removing up to {batch_size} comment(s)... [daily: {self._daily_actions}/{DAILY_CAP}]")
 
-                # Step 1: Click Select (native click)
+                # Step 1: Click Select
                 select_pos = await page.evaluate("""
                     () => {
                         const els = document.querySelectorAll('span, button, [role="button"], a');
@@ -201,8 +357,7 @@ class InstagramClient(PlatformClient):
                 await page.mouse.click(select_pos["x"], select_pos["y"])
                 await page.wait_for_timeout(1500)
 
-                # Step 2: Click checkboxes (native clicks)
-                # Scroll down to load enough checkboxes for the batch
+                # Step 2: Click checkboxes with scroll-to-load
                 selected_count = 0
                 scroll_attempts = 0
                 while selected_count < batch_size and scroll_attempts < 10:
@@ -230,20 +385,19 @@ class InstagramClient(PlatformClient):
                     """)
 
                     if len(checkboxes) == 0 and selected_count == 0:
-                        break  # No checkboxes at all
+                        break
 
-                    # Click unchecked checkboxes visible on screen
                     for cb in checkboxes:
                         if selected_count >= batch_size:
                             break
                         await page.mouse.click(cb["x"], cb["y"])
                         selected_count += 1
-                        await page.wait_for_timeout(300)
+                        click_delay = random.randint(CLICK_DELAY_MIN, CLICK_DELAY_MAX)
+                        await page.wait_for_timeout(click_delay)
 
                     if selected_count >= batch_size:
                         break
 
-                    # Scroll down to reveal more
                     await page.evaluate("window.scrollBy(0, 400)")
                     await page.wait_for_timeout(1000)
                     scroll_attempts += 1
@@ -254,9 +408,11 @@ class InstagramClient(PlatformClient):
                     break
 
                 await self._log(f"Selected {actual_batch} comment(s)")
-                await page.wait_for_timeout(500)
 
-                # Step 3: Click Delete (bottom bar, native click)
+                # Optional reading pause before action
+                await self._reading_pause()
+
+                # Step 3: Click Delete (bottom bar)
                 delete_pos = await page.evaluate("""
                     () => {
                         const els = document.querySelectorAll('span, div, button');
@@ -314,13 +470,12 @@ class InstagramClient(PlatformClient):
                         await self._log("Too many failures, stopping", "error")
                         break
                     await self._navigate_to_comments(page)
-                    count_before = await self._count_comments(page)
                     continue
 
                 await page.mouse.click(confirm_pos["x"], confirm_pos["y"])
                 await page.wait_for_timeout(3000)
 
-                # Step 5: Verify dialog dismissed (confirm click worked)
+                # Step 5: Verify dialog dismissed
                 dialog_still_open = await page.evaluate("""
                     () => {
                         const els = document.querySelectorAll('*');
@@ -342,18 +497,23 @@ class InstagramClient(PlatformClient):
                     await self._navigate_to_comments(page)
                     continue
 
-                # Dialog dismissed = deletion succeeded. Count is unreliable
-                # due to Instagram paginating in older comments, so trust the flow.
+                # Success
                 total_deleted += actual_batch
+                self._record_actions(actual_batch)
                 consecutive_failures = 0
                 await self._report_progress(deleted=total_deleted)
-                await self._log(f"Deleted {actual_batch} comment(s). Total deleted: {total_deleted}")
+                await self._log(f"Deleted {actual_batch} comment(s). Total: {total_deleted}")
 
-                # Reload page for next batch
+                # Reload and check for action block
                 if not await self._navigate_to_comments(page):
                     await self._log("Page failed to load after deletion", "error")
                     verified = await self._pause_and_retry(page)
                     if not verified:
+                        return total_deleted > 0
+
+                if await self._check_action_blocked(page):
+                    await self._handle_action_block()
+                    if not await self._navigate_to_comments(page):
                         return total_deleted > 0
 
                 # Check if any comments remain
@@ -362,22 +522,10 @@ class InstagramClient(PlatformClient):
                     await self._log("All comments deleted!")
                     return True
 
-                await self._log(f"Comments on page: {count_after}. Continuing...")
+                await self._log(f"Comments remaining on page: {count_after}")
 
-                # Rest pause every 300 deletions to simulate human behavior
-                if total_deleted > 0 and total_deleted % 300 < actual_batch:
-                    rest_minutes = random.uniform(3, 6)
-                    await self._log(f"Reached {total_deleted} deletions. Resting for {rest_minutes:.1f} minutes...")
-                    rest_seconds = int(rest_minutes * 60)
-                    for i in range(0, rest_seconds, 30):
-                        await self._check_cancelled()
-                        remaining = rest_seconds - i
-                        await self._log(f"Resting... {remaining}s remaining")
-                        await asyncio.sleep(min(30, remaining))
-
-                # Random delay between batches (5-15 seconds)
-                delay = random.uniform(5, 15)
-                await page.wait_for_timeout(int(delay * 1000))
+                # Inter-batch delay (20-45 seconds)
+                await self._inter_batch_delay()
 
             await self._log(f"Batch delete finished. Total deleted: {total_deleted}")
             return total_deleted > 0
@@ -623,8 +771,8 @@ class InstagramClient(PlatformClient):
 
     async def _batch_unlike_likes(self) -> bool:
         """
-        Unlike likes one at a time, verifying each by checking
-        that the image fingerprint disappears from the grid.
+        Unlike likes in batches of 20-25, with session/daily limits,
+        action block detection, and human-like timing.
         """
         total_unliked = 0
         consecutive_failures = 0
@@ -636,17 +784,22 @@ class InstagramClient(PlatformClient):
                 return False
 
             fingerprints_before = await self._get_grid_fingerprints(page)
-            await self._log(f"Starting batch unlike. Likes visible: {len(fingerprints_before)}")
+            await self._log(f"Likes visible: {len(fingerprints_before)}")
 
             if len(fingerprints_before) == 0:
                 await self._log("No likes to remove")
                 return True
 
-            while not self._cancelled:
-                await self._check_cancelled()
+            # ETA estimate
+            eta = self._estimate_duration(len(fingerprints_before))
+            await self._log(f"Estimated duration: {eta}")
 
-                batch_size = random.randint(20, 25)
-                await self._log(f"Removing up to {batch_size} like(s)...")
+            while not self._cancelled:
+                # Enforce session time and daily cap limits
+                await self._check_session_limits()
+
+                batch_size = random.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
+                await self._log(f"Batch: removing up to {batch_size} like(s)... [daily: {self._daily_actions}/{DAILY_CAP}]")
 
                 # Get fingerprints before this batch
                 fp_before = await self._get_grid_fingerprints(page)
@@ -674,7 +827,7 @@ class InstagramClient(PlatformClient):
                 await page.mouse.click(select_pos["x"], select_pos["y"])
                 await page.wait_for_timeout(1500)
 
-                # Step 2: Click thumbnails (batch_size items, scroll to load more)
+                # Step 2: Click thumbnails with scroll-to-load
                 selected_files = []
                 scroll_attempts = 0
                 while len(selected_files) < batch_size and scroll_attempts < 10:
@@ -691,7 +844,6 @@ class InstagramClient(PlatformClient):
                                 if (src.includes('static')) continue;
                                 const rect = img.getBoundingClientRect();
                                 if (rect.width > 0 && rect.height > 0 && rect.y > 0) {
-                                    // Check if this thumbnail has a selected overlay
                                     const parent = img.closest('div');
                                     const isSelected = parent?.querySelector('[aria-checked="true"]') ||
                                                       img.style.opacity === '0.5' ||
@@ -715,9 +867,8 @@ class InstagramClient(PlatformClient):
                     """)
 
                     if len(grid_items) == 0 and len(selected_files) == 0:
-                        break  # No thumbnails at all
+                        break
 
-                    # Click unselected thumbnails
                     already_selected = set(selected_files)
                     for item in grid_items:
                         if len(selected_files) >= batch_size:
@@ -726,12 +877,12 @@ class InstagramClient(PlatformClient):
                             continue
                         await page.mouse.click(item["x"], item["y"])
                         selected_files.append(item["src_file"])
-                        await page.wait_for_timeout(300)
+                        click_delay = random.randint(CLICK_DELAY_MIN, CLICK_DELAY_MAX)
+                        await page.wait_for_timeout(click_delay)
 
                     if len(selected_files) >= batch_size:
                         break
 
-                    # Scroll down to load more thumbnails
                     await page.evaluate("window.scrollBy(0, 400)")
                     await page.wait_for_timeout(1000)
                     scroll_attempts += 1
@@ -742,7 +893,9 @@ class InstagramClient(PlatformClient):
                     break
 
                 await self._log(f"Selected {actual_batch} thumbnail(s)")
-                await page.wait_for_timeout(500)
+
+                # Optional reading pause before action
+                await self._reading_pause()
 
                 # Step 3: Click Unlike (bottom bar)
                 unlike_pos = await page.evaluate("""
@@ -807,7 +960,6 @@ class InstagramClient(PlatformClient):
                     if consecutive_failures >= 3:
                         await self._log("Too many failures, stopping", "error")
                         break
-                    # Reload page and retry
                     await self._navigate_to_likes(page)
                     continue
 
@@ -816,11 +968,19 @@ class InstagramClient(PlatformClient):
 
                 # Verify by reloading and checking fingerprints
                 await self._navigate_to_likes(page)
+
+                # Check for action block
+                if await self._check_action_blocked(page):
+                    await self._handle_action_block()
+                    if not await self._navigate_to_likes(page):
+                        return total_unliked > 0
+
                 fp_after = await self._get_grid_fingerprints(page)
                 removed = set(selected_files) - set(fp_after)
 
                 if removed:
                     total_unliked += actual_batch
+                    self._record_actions(actual_batch)
                     consecutive_failures = 0
                     await self._report_progress(deleted=total_unliked)
                     await self._log(f"Verified: {len(removed)} like(s) removed. Total: {total_unliked}")
@@ -833,20 +993,12 @@ class InstagramClient(PlatformClient):
                             break
                         consecutive_failures = 0
 
-                # Rest pause every 300 unlikes to simulate human behavior
-                if total_unliked > 0 and total_unliked % 300 < actual_batch:
-                    rest_minutes = random.uniform(3, 6)
-                    await self._log(f"Reached {total_unliked} unlikes. Resting for {rest_minutes:.1f} minutes...")
-                    rest_seconds = int(rest_minutes * 60)
-                    for i in range(0, rest_seconds, 30):
-                        await self._check_cancelled()
-                        remaining = rest_seconds - i
-                        await self._log(f"Resting... {remaining}s remaining")
-                        await asyncio.sleep(min(30, remaining))
+                if len(fp_after) == 0:
+                    await self._log("All likes removed!")
+                    return True
 
-                # Random delay between batches (5-15 seconds)
-                delay = random.uniform(5, 15)
-                await page.wait_for_timeout(int(delay * 1000))
+                # Inter-batch delay (20-45 seconds)
+                await self._inter_batch_delay()
 
             await self._log(f"Batch unlike finished. Total unliked: {total_unliked}")
             return total_unliked > 0
