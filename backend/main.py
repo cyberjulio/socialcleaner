@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Cleaner",
+    title="SocialCleaner",
     description="Clean your digital footprint on Instagram and X",
     version="0.1.0",
     lifespan=lifespan,
@@ -38,10 +38,6 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:8000",
         "http://localhost:8000",
-        "https://www.instagram.com",
-        "https://instagram.com",
-        "https://x.com",
-        "https://twitter.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],

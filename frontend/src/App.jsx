@@ -11,13 +11,20 @@ export default function App() {
   const [importStatus, setImportStatus] = useState(null) // 'loading' | 'success' | 'error'
   const [importResult, setImportResult] = useState(null)
 
-  const refresh = async () => {
-    try {
-      const [s, t] = await Promise.all([api.getSessions(), api.getTasks()])
-      setSessions(s)
-      setTasks(t)
-    } catch (e) {
-      setError(e.message)
+  const refresh = async (retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const [s, t] = await Promise.all([api.getSessions(), api.getTasks()])
+        setSessions(s)
+        setTasks(t)
+        return
+      } catch (e) {
+        if (i === retries - 1) {
+          setError(e.message)
+        } else {
+          await new Promise(r => setTimeout(r, 2000))
+        }
+      }
     }
   }
 
@@ -59,7 +66,7 @@ export default function App() {
             className="text-xl font-bold tracking-tight cursor-pointer"
             onClick={() => setView('dashboard')}
           >
-            cleaner
+            <span className="bg-black text-white px-1.5 py-0.5 rounded-l">social</span><span className="bg-white text-black px-1.5 py-0.5 rounded-r">cleaner</span>
           </h1>
           <button
             onClick={() => setView(view === 'connect' ? 'dashboard' : 'connect')}

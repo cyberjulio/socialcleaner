@@ -8,3 +8,9 @@ dist/
 .vite/
 browser_data/
 .playwright/
+*.png
+*.db-shm
+*.db-wal
+server.log
+test_debug/
+test_unlike.py

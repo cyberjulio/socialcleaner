@@ -19,6 +19,20 @@ class EventBus:
             del self._subscribers[task_id]
 
     async def publish(self, task_id: str, event_type: str, data: dict):
+        # Persist log events to DB
+        if event_type == "log":
+            try:
+                from backend.database import get_db
+                db = await get_db()
+                await db.execute(
+                    "INSERT INTO events (task_id, event_type, payload) VALUES (?, ?, ?)",
+                    (task_id, event_type, json.dumps(data)),
+                )
+                await db.commit()
+                await db.close()
+            except Exception:
+                pass
+
         for q in self._subscribers.get(task_id, []):
             try:
                 q.put_nowait({"event": event_type, "data": data})

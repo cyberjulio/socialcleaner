@@ -8,10 +8,15 @@ class PlatformClient(ABC):
         self.context = context
         self.cookies = cookies
         self._log_callback = None
+        self._progress_callback = None
 
     def set_log_callback(self, callback):
         """Set a callback for live logging to the frontend."""
         self._log_callback = callback
+
+    def set_progress_callback(self, callback):
+        """Set a callback for reporting batch progress (deleted count, total)."""
+        self._progress_callback = callback
 
     async def _log(self, message: str, level: str = "info"):
         """Log to both Python logger and optional frontend callback."""
@@ -20,6 +25,11 @@ class PlatformClient(ABC):
         getattr(logger, level, logger.info)(message)
         if self._log_callback:
             await self._log_callback(message, level)
+
+    async def _report_progress(self, deleted: int, total: int | None = None):
+        """Report batch operation progress to the engine."""
+        if self._progress_callback:
+            await self._progress_callback(deleted, total)
 
     @abstractmethod
     async def validate_session(self) -> dict:

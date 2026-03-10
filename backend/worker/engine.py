@@ -1,7 +1,10 @@
 import asyncio
 import json
 import logging
+import os
 import random
+import signal
+import subprocess
 import uuid
 from datetime import datetime
 
@@ -26,8 +29,36 @@ class WorkerEngine:
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._pw = None
 
+    @staticmethod
+    def _cleanup_orphaned_browsers():
+        """Kill any orphaned headless Chromium processes from previous runs."""
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", "(chromium|firefox).*--headless"],
+                capture_output=True, text=True
+            )
+            pids = result.stdout.strip().split("\n")
+            my_pid = os.getpid()
+            killed = 0
+            for pid_str in pids:
+                if not pid_str:
+                    continue
+                pid = int(pid_str)
+                if pid != my_pid:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                        killed += 1
+                    except ProcessLookupError:
+                        pass
+            if killed:
+                logger.info(f"Cleaned up {killed} orphaned Chromium process(es)")
+        except Exception as e:
+            logger.debug(f"Browser cleanup check: {e}")
+
     async def start(self):
         """Initialize the browser and resume any interrupted tasks."""
+        self._cleanup_orphaned_browsers()
+
         self._pw = await async_playwright().start()
         self._browser = await self._pw.chromium.launch(headless=True)
 
@@ -45,6 +76,13 @@ class WorkerEngine:
                 self.schedule_task(row["id"])
         finally:
             await db.close()
+
+    def cancel_task(self, task_id: str):
+        """Cancel a running task immediately."""
+        asyncio_task = self._running_tasks.get(task_id)
+        if asyncio_task:
+            asyncio_task.cancel()
+            logger.info(f"Cancelled asyncio task for {task_id}")
 
     async def stop(self):
         """Gracefully shutdown."""
@@ -71,9 +109,11 @@ class WorkerEngine:
         user_agent = session_row["user_agent"] or random.choice(USER_AGENTS)
         logger.info(f"Using user-agent: {user_agent[:80]}...")
 
-        # Create a fresh browser per task — same as auth flow
-        # This avoids stale state from the persistent browser
-        task_browser = await self._pw.chromium.launch(headless=True)
+        # Use Firefox if the session was created with Firefox, otherwise Chromium
+        is_firefox = "Firefox" in user_agent or "Gecko" in user_agent
+        browser_type = self._pw.firefox if is_firefox else self._pw.chromium
+        logger.info(f"Launching {'Firefox' if is_firefox else 'Chromium'} (headless)")
+        task_browser = await browser_type.launch(headless=True)
         context = await task_browser.new_context(
             user_agent=user_agent,
             viewport={"width": 1440, "height": 900},
@@ -134,6 +174,26 @@ class WorkerEngine:
                 await event_bus.publish(task_id, "log", {"message": message, "level": level})
             client.set_log_callback(log_to_frontend)
 
+            # Wire up batch progress reporting
+            async def report_progress(deleted, total=None):
+                progress_db = await get_db()
+                try:
+                    if total is not None:
+                        await progress_db.execute(
+                            "UPDATE tasks SET deleted = ?, total_items = ?, updated_at = datetime('now') WHERE id = ?",
+                            (deleted, total, task_id),
+                        )
+                    else:
+                        await progress_db.execute(
+                            "UPDATE tasks SET deleted = ?, updated_at = datetime('now') WHERE id = ?",
+                            (deleted, task_id),
+                        )
+                    await progress_db.commit()
+                    await event_bus.publish(task_id, "batch_progress", {"deleted": deleted, "total": total})
+                finally:
+                    await progress_db.close()
+            client.set_progress_callback(report_progress)
+
             rate_limiter = RateLimiter(task["platform"])
 
             # Phase 1: Scan for items (if not already scanned)
@@ -152,6 +212,16 @@ class WorkerEngine:
                 await event_bus.publish(task_id, "log", {"message": f"Starting scan for {task['target_type']} on {task['platform']}..."})
                 try:
                     async for item_data in client.fetch_items(task["target_type"]):
+                        # Check for cancellation during scan
+                        current = await db.execute_fetchall(
+                            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+                        )
+                        if current and current[0]["status"] in ("paused", "cancelled"):
+                            await event_bus.publish(task_id, "log", {"message": f"Task {current[0]['status']} during scan"})
+                            if hasattr(client, 'cancel'):
+                                client.cancel()
+                            break
+
                         item_id = str(uuid.uuid4())
                         await db.execute(
                             "INSERT INTO items (id, task_id, platform_id, item_type, metadata) VALUES (?, ?, ?, ?, ?)",
@@ -165,6 +235,8 @@ class WorkerEngine:
 
                         # Small delay between pagination requests
                         await asyncio.sleep(random.uniform(1, 3))
+                except asyncio.CancelledError:
+                    await event_bus.publish(task_id, "log", {"message": "Task cancelled"})
                 except Exception as scan_err:
                     logger.error(f"Scan error: {scan_err}", exc_info=True)
                     await event_bus.publish(task_id, "log", {"message": f"SCAN ERROR: {scan_err}", "level": "error"})

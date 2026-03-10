@@ -63,7 +63,7 @@ function getConsoleSnippet(platform) {
   const still=needed.filter(n=>!found[n]);
   if(still.length){alert('Still missing: '+still.join(', '));return;}
   const data=btoa(JSON.stringify({platform:'instagram',cookies:found}));
-  prompt('Copy this value, go back to cleaner, and paste it:',data);
+  prompt('Copy this value, go back to socialcleaner, and paste it:',data);
 })();`
   } else {
     return `(async()=>{
@@ -85,7 +85,7 @@ function getConsoleSnippet(platform) {
   const still=needed.filter(n=>!found[n]);
   if(still.length){alert('Still missing: '+still.join(', '));return;}
   const data=btoa(JSON.stringify({platform:'twitter',cookies:found}));
-  prompt('Copy this value, go back to cleaner, and paste it:',data);
+  prompt('Copy this value, go back to socialcleaner, and paste it:',data);
 })();`
   }
 }

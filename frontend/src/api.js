@@ -36,6 +36,7 @@ export const api = {
       body: JSON.stringify({ status }),
     }),
   deleteTask: (id) => request(`/tasks/${id}`, { method: 'DELETE' }),
+  getTaskLogs: (id) => request(`/tasks/${id}/logs`),
 
   // SSE
   streamTask: (taskId, onEvent) => {

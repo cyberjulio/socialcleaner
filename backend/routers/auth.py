@@ -72,7 +72,8 @@ async def connect_session(data: SessionCreate, request: Request):
         try:
             user_info = await client.validate_session()
         except Exception as e:
-            raise HTTPException(401, f"Session validation failed: {e}")
+            logger.error(f"Session validation failed: {e}")
+            raise HTTPException(401, "Session validation failed. Check that your cookies are correct and not expired.")
 
         username = user_info.get("username", "unknown")
 

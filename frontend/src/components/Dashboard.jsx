@@ -32,8 +32,8 @@ export default function Dashboard({ sessions, tasks, onRefresh, onError }) {
     }
   }
 
-  const activeTasks = tasks.filter(t => !['completed', 'failed'].includes(t.status))
-  const completedTasks = tasks.filter(t => ['completed', 'failed'].includes(t.status))
+  const activeTasks = tasks.filter(t => !['completed', 'failed', 'cancelled'].includes(t.status))
+  const completedTasks = tasks.filter(t => ['completed', 'failed', 'cancelled'].includes(t.status))
 
   return (
     <div>

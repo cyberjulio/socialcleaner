@@ -87,8 +87,8 @@ async def get_task(task_id: str):
 
 @router.patch("/{task_id}")
 async def update_task(task_id: str, data: TaskUpdate):
-    if data.status not in ("paused", "running"):
-        raise HTTPException(400, "Can only set status to 'paused' or 'running'")
+    if data.status not in ("paused", "running", "cancelled"):
+        raise HTTPException(400, "Can only set status to 'paused', 'running', or 'cancelled'")
 
     db = await get_db()
     try:
@@ -102,7 +102,9 @@ async def update_task(task_id: str, data: TaskUpdate):
         )
         await db.commit()
 
-        if data.status == "running":
+        if data.status == "cancelled":
+            worker_engine.cancel_task(task_id)
+        elif data.status == "running":
             worker_engine.schedule_task(task_id)
 
         return {"ok": True, "status": data.status}
@@ -119,6 +121,23 @@ async def delete_task(task_id: str):
         await db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         await db.commit()
         return {"ok": True}
+    finally:
+        await db.close()
+
+
+@router.get("/{task_id}/logs")
+async def get_task_logs(task_id: str):
+    """Fetch persisted logs for a task."""
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT payload, created_at FROM events WHERE task_id = ? AND event_type = 'log' ORDER BY id",
+            (task_id,),
+        )
+        return [
+            {"ts": r["created_at"], "level": json.loads(r["payload"]).get("level", "info"), "msg": json.loads(r["payload"]).get("message", "")}
+            for r in rows
+        ]
     finally:
         await db.close()
 

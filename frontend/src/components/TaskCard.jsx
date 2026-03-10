@@ -8,13 +8,15 @@ const STATUS_COLORS = {
   paused: 'bg-gray-700 text-gray-300',
   completed: 'bg-green-900/50 text-green-400',
   failed: 'bg-red-900 text-red-300',
+  cancelled: 'bg-gray-700 text-gray-400',
 }
 
 export default function TaskCard({ task: initialTask, onRefresh, onDelete, compact }) {
   const [task, setTask] = useState(initialTask)
   const [notice, setNotice] = useState(null)
   const [logs, setLogs] = useState([])
-  const [showLogs, setShowLogs] = useState(true)
+  const [showLogs, setShowLogs] = useState(!compact)
+  const [historyLoaded, setHistoryLoaded] = useState(false)
   const [copied, setCopied] = useState(false)
   const [autoCloseIn, setAutoCloseIn] = useState(null)
   const sourceRef = useRef(null)
@@ -44,19 +46,22 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
       if (eventType === 'task_status') {
         setTask(prev => ({ ...prev, status: data.status }))
         setLogs(prev => [...prev, { ts, level: 'info', msg: `Status: ${data.status}${data.error ? ' — ' + data.error : ''}` }])
-        if (['completed', 'failed'].includes(data.status)) {
+        if (['completed', 'failed', 'cancelled'].includes(data.status)) {
           // Start 30s countdown, then refresh (which moves task to compact/history)
+          // Uses a fixed timeout so no user action (copy, etc.) can prevent it
           setAutoCloseIn(30)
+          const startTime = Date.now()
           autoCloseRef.current = setInterval(() => {
-            setAutoCloseIn(prev => {
-              if (prev <= 1) {
-                clearInterval(autoCloseRef.current)
-                autoCloseRef.current = null
-                onRefresh()
-                return null
-              }
-              return prev - 1
-            })
+            const elapsed = Math.floor((Date.now() - startTime) / 1000)
+            const remaining = 30 - elapsed
+            if (remaining <= 0) {
+              clearInterval(autoCloseRef.current)
+              autoCloseRef.current = null
+              setAutoCloseIn(null)
+              onRefresh()
+            } else {
+              setAutoCloseIn(remaining)
+            }
           }, 1000)
         }
       } else if (eventType === 'scan_progress') {
@@ -77,6 +82,12 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
       } else if (eventType === 'checkpoint_required') {
         setNotice('Platform requires verification! Check your app.')
         setLogs(prev => [...prev, { ts, level: 'error', msg: data.message }])
+      } else if (eventType === 'batch_progress') {
+        setTask(prev => ({
+          ...prev,
+          deleted: data.deleted,
+          ...(data.total != null ? { total_items: data.total } : {}),
+        }))
       } else if (eventType === 'log') {
         setLogs(prev => [...prev, { ts, level: data.level || 'info', msg: data.message }])
       }
@@ -90,6 +101,11 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
     const newStatus = task.status === 'paused' ? 'running' : 'paused'
     await api.updateTask(task.id, newStatus)
     setTask(prev => ({ ...prev, status: newStatus }))
+  }
+
+  const stopTask = async () => {
+    await api.updateTask(task.id, 'cancelled')
+    setTask(prev => ({ ...prev, status: 'cancelled' }))
   }
 
   const copyLogs = async () => {
@@ -112,41 +128,82 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
   }
 
   const progress = task.total_items > 0
-    ? Math.round(((task.deleted + task.failed) / task.total_items) * 100)
-    : 0
-
-  if (compact) {
-    return (
-      <div className="flex items-center justify-between p-3 bg-gray-900/50 rounded-lg border border-gray-800/50">
-        <div className="flex items-center gap-3 text-sm">
-          <span className={`text-xs font-bold uppercase px-2 py-0.5 rounded ${
-            task.platform === 'instagram' ? 'bg-purple-900/50 text-purple-400' : 'bg-blue-900/50 text-blue-400'
-          }`}>
-            {task.platform}
-          </span>
-          <span className="text-gray-400">{task.target_type}</span>
-          <span className="text-gray-500">
-            {task.deleted} deleted / {task.total_items} total
-          </span>
-          <span className={`text-xs px-2 py-0.5 rounded ${STATUS_COLORS[task.status]}`}>
-            {task.status}
-          </span>
-        </div>
-        <button
-          onClick={() => onDelete(task.id)}
-          className="text-xs text-gray-500 hover:text-red-400 transition"
-        >
-          remove
-        </button>
-      </div>
-    )
-  }
+    ? Math.min(100, Math.round(((task.deleted + task.failed) / task.total_items) * 100))
+    : (task.deleted > 0 ? 100 : 0)
 
   const LOG_COLORS = {
     info: 'text-gray-400',
     ok: 'text-green-400',
     warn: 'text-yellow-400',
     error: 'text-red-400',
+  }
+
+  if (compact) {
+    return (
+      <div className="p-3 bg-gray-900/50 rounded-lg border border-gray-800/50">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3 text-sm">
+            <span className={`text-xs font-bold uppercase px-2 py-0.5 rounded ${
+              task.platform === 'instagram' ? 'bg-purple-900/50 text-purple-400' : 'bg-blue-900/50 text-blue-400'
+            }`}>
+              {task.platform}
+            </span>
+            <span className="text-gray-400">{task.target_type}</span>
+            <span className="text-gray-500">
+              {task.deleted} deleted{task.total_items > 1 ? ` / ${task.total_items} total` : ''}
+            </span>
+            <span className={`text-xs px-2 py-0.5 rounded ${STATUS_COLORS[task.status]}`}>
+              {task.status}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                if (!showLogs && logs.length === 0 && !historyLoaded) {
+                  try {
+                    const historical = await api.getTaskLogs(task.id)
+                    if (historical.length > 0) setLogs(historical)
+                    setHistoryLoaded(true)
+                  } catch {}
+                }
+                setShowLogs(v => !v)
+              }}
+              className="text-xs text-gray-500 hover:text-gray-300 transition"
+            >
+              {showLogs ? 'hide logs' : 'logs'}
+            </button>
+            <button
+              onClick={() => onDelete(task.id)}
+              className="text-xs text-gray-500 hover:text-red-400 transition"
+            >
+              remove
+            </button>
+          </div>
+        </div>
+        {showLogs && (
+          <div className="mt-2 bg-gray-950 rounded-lg border border-gray-800 overflow-hidden">
+            <div className="px-3 py-1 bg-gray-900 border-b border-gray-800 flex items-center justify-between">
+              <span className="text-xs text-gray-500">{logs.length > 0 ? `${logs.length} entries` : 'No logs recorded'}</span>
+              <button
+                onClick={copyLogs}
+                className={`px-2 py-0.5 text-xs rounded transition ${
+                  copied ? 'bg-green-900/50 text-green-400' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                }`}
+              >
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+            <div className="p-2 max-h-48 overflow-y-auto font-mono text-xs leading-relaxed">
+              {logs.map((log, i) => (
+                <div key={i} className={`${LOG_COLORS[log.level] || 'text-gray-400'} whitespace-pre-wrap break-all`}>
+                  <span className="text-gray-600">[{log.ts}]</span> {log.msg}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -166,13 +223,21 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {!['completed', 'failed'].includes(task.status) && (
-            <button
-              onClick={togglePause}
-              className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg transition"
-            >
-              {task.status === 'paused' ? 'Resume' : 'Pause'}
-            </button>
+          {!['completed', 'failed', 'cancelled'].includes(task.status) && (
+            <>
+              <button
+                onClick={togglePause}
+                className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg transition"
+              >
+                {task.status === 'paused' ? 'Resume' : 'Pause'}
+              </button>
+              <button
+                onClick={stopTask}
+                className="px-3 py-1.5 text-xs bg-red-700 hover:bg-red-600 rounded-lg transition"
+              >
+                Stop
+              </button>
+            </>
           )}
           <button
             onClick={() => setShowLogs(v => !v)}

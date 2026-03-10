@@ -17,11 +17,18 @@ class InstagramClient(PlatformClient):
         super().__init__(context, cookies)
         self.csrf_token = cookies.get("csrftoken", "")
         self.user_id = cookies.get("ds_user_id", "")
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    async def _check_cancelled(self):
+        if self._cancelled:
+            raise asyncio.CancelledError("Task cancelled by user")
 
     async def _new_page(self) -> Page:
-        """Create a new page and navigate to IG."""
+        """Create a new page with IG session loaded."""
         page = await self.context.new_page()
-        await self._log("Opening Instagram homepage...")
         await page.goto(IG_BASE, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(2000)
         return page
@@ -58,31 +65,18 @@ class InstagramClient(PlatformClient):
             async for item in self._fetch_comments():
                 yield item
 
-    # ── Comments: scan via network interception ──────────────────────
+    # ── Comments ─────────────────────────────────────────────────────
 
     async def _fetch_comments(self) -> AsyncIterator[dict]:
-        """Navigate to Your Activity > Comments page and capture API responses."""
+        """Yield a single batch_delete item — actual work happens in delete_item."""
         page = await self._new_page()
         try:
-            captured = []
-
-            async def on_response(response):
-                url = response.url
-                if any(k in url for k in ["wbloks/fetch", "graphql"]):
-                    try:
-                        body = await response.text()
-                        if len(body) > 1000:
-                            captured.append({"url": url, "body": body})
-                    except Exception:
-                        pass
-
-            page.on("response", on_response)
-
+            await self._check_cancelled()
             await self._log("Navigating to Your Activity > Comments...")
             try:
                 await page.goto(
                     f"{IG_BASE}/your_activity/interactions/comments",
-                    wait_until="networkidle",
+                    wait_until="domcontentloaded",
                     timeout=30000,
                 )
             except Exception:
@@ -93,288 +87,210 @@ class InstagramClient(PlatformClient):
                 await self._log("Redirected to login — session invalid", "error")
                 return
 
-            await self._log(f"On page: {page.url}")
-            await self._log(f"Captured {len(captured)} API responses")
+            count = await self._count_comments(page)
+            await self._log(f"Found {count} comments on page")
 
-            # Scroll to load more comments
-            for scroll in range(5):
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(random.uniform(2000, 3000))
+            if count == 0:
+                await self._log("No comments to delete")
+                return
 
-            await self._log(f"After scrolling, {len(captured)} total API responses captured")
-
-            # Parse comments from all captured responses
-            comments = []
-            for resp in captured:
-                parsed = self._parse_comments_response(resp["body"])
-                if parsed:
-                    await self._log(f"Parsed {len(parsed)} comments from {resp['url'][:80]}")
-                    comments.extend(parsed)
-
-            # Deduplicate by comment_id
-            seen = set()
-            unique = []
-            for c in comments:
-                cid = c.get("comment_id", "")
-                if cid and cid not in seen:
-                    seen.add(cid)
-                    unique.append(c)
-
-            await self._log(f"Found {len(unique)} unique comments total")
-
-            for i, c in enumerate(unique):
-                text_preview = c.get("text", "")[:60]
-                await self._log(f"Comment #{i+1}: '{text_preview}' (id={c.get('comment_id', '?')})")
-                yield {
-                    "platform_id": c.get("comment_id", f"comment_{i}"),
-                    "item_type": "comment",
-                    "metadata": json.dumps(c),
-                }
+            yield {
+                "platform_id": "batch_comments",
+                "item_type": "comment",
+                "metadata": json.dumps({"mode": "batch_delete", "initial_count": count}),
+            }
         finally:
             await page.close()
 
-    def _parse_comments_response(self, body: str) -> list[dict]:
-        """Parse comments from a wbloks or graphql response."""
-        comments = []
+    async def _count_comments(self, page: Page) -> int:
+        """Count comment entries by looking for timestamp patterns (2w, 3d, 1h, etc.)."""
+        return await page.evaluate("""
+            () => {
+                const spans = document.querySelectorAll('span');
+                let count = 0;
+                for (const span of spans) {
+                    const t = span.textContent?.trim();
+                    if (/^\\d+[smhdw]$/.test(t)) count++;
+                }
+                return count;
+            }
+        """)
 
-        # Try JSON parse first
+    async def _navigate_to_comments(self, page: Page) -> bool:
+        """Navigate (or reload) the Your Activity > Comments page."""
         try:
-            data = json.loads(body)
-            # GraphQL response format
-            comments.extend(self._extract_from_graphql(data))
-        except json.JSONDecodeError:
+            await page.goto(
+                f"{IG_BASE}/your_activity/interactions/comments",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+        except Exception:
             pass
+        await page.wait_for_timeout(3000)
 
-        # Try wbloks format (may start with "for (;;);")
-        clean = body
-        if body.startswith("for (;;);"):
-            clean = body[len("for (;;);"):]
-            try:
-                data = json.loads(clean)
-                raw = json.dumps(data)
-            except Exception:
-                raw = clean
-        else:
-            raw = body
-
-        comments.extend(self._extract_from_wbloks(raw))
-        return comments
-
-    def _extract_from_graphql(self, data: dict, depth: int = 0) -> list[dict]:
-        """Recursively extract comments from GraphQL JSON response."""
-        comments = []
-        if depth > 10:
-            return comments
-
-        if isinstance(data, dict):
-            # Check if this dict looks like a comment node
-            has_text = "text" in data and isinstance(data.get("text"), str) and len(data["text"]) > 2
-            has_id = any(k in data for k in ("id", "pk", "comment_id", "node_id"))
-
-            if has_text and has_id:
-                text = data["text"]
-                # Filter out UI strings
-                if not any(ui in text.lower() for ui in [
-                    "sort & filter", "appears on", "select all", "delete",
-                    "dtl:", "bk.", "ig_activity", "visible"
-                ]):
-                    comment_id = str(data.get("comment_id") or data.get("pk") or data.get("id") or data.get("node_id") or "")
-                    media_id = str(data.get("media_id") or data.get("media_pk") or "")
-
-                    # Try to find media_id in parent context
-                    if not media_id:
-                        media = data.get("media") or data.get("post") or {}
-                        if isinstance(media, dict):
-                            media_id = str(media.get("id") or media.get("pk") or "")
-
-                    if comment_id:
-                        comments.append({
-                            "comment_id": comment_id,
-                            "text": text[:500],
-                            "media_id": media_id,
-                        })
-
-            # Recurse into all values
-            for v in data.values():
-                comments.extend(self._extract_from_graphql(v, depth + 1))
-
-        elif isinstance(data, list):
-            for item in data:
-                comments.extend(self._extract_from_graphql(item, depth + 1))
-
-        return comments
-
-    def _extract_from_wbloks(self, raw: str) -> list[dict]:
-        """Extract comments from wbloks response text using pattern matching."""
-        comments = []
-        seen_ids = set()
-
-        # Pattern: look for comment structures in wbloks
-        # wbloks data contains stringified arrays with comment data
-        # Look for patterns like: "comment_id_value","comment_text","timestamp","media_id_value"
-
-        # Find all long numeric IDs (potential comment_ids or media_ids)
-        all_ids = re.findall(r'\b(\d{10,20})\b', raw)
-
-        # Find all text strings that look like actual comment content
-        # (not UI labels, not internal identifiers)
-        all_strings = re.findall(r'"((?:[^"\\]|\\.){5,500})"', raw)
-        comment_texts = []
-        for s in all_strings:
-            # Filter out UI text and internal strings
-            if any(skip in s.lower() for skip in [
-                "sort & filter", "appears on facebook", "dtl:", "bk.", "ig_",
-                "com.instagram", "visible", "activity_center", "instagram.com",
-                "select all", "\\u0", "function", "script", "style", "class=",
-                "div>", "span>", "http", "www.", ".js", ".css", ".png", ".jpg",
-            ]):
-                continue
-            # Must look like natural language (has spaces, not all digits)
-            if " " in s and not s.isdigit() and len(s) > 5:
-                comment_texts.append(s)
-
-        # Try to pair comment texts with nearby IDs
-        for text in comment_texts:
-            pos = raw.find(f'"{text}"')
-            if pos < 0:
-                continue
-            # Look for numeric IDs near this text (within 200 chars)
-            nearby = raw[max(0, pos - 200):pos + len(text) + 200]
-            nearby_ids = re.findall(r'\b(\d{10,20})\b', nearby)
-
-            if nearby_ids:
-                comment_id = nearby_ids[0]
-                media_id = nearby_ids[1] if len(nearby_ids) > 1 else ""
-
-                if comment_id not in seen_ids:
-                    seen_ids.add(comment_id)
-                    comments.append({
-                        "comment_id": comment_id,
-                        "text": text[:500],
-                        "media_id": media_id,
-                    })
-
-        return comments
-
-    # ── Comments: delete via UI ──────────────────────────────────────
-
-    async def delete_item(self, item: dict) -> bool:
-        """Delete an item by interacting with the UI."""
-        if item["item_type"] == "like":
-            return await self._unlike_via_post(item)
-        elif item["item_type"] == "comment":
-            return await self._delete_comment_via_ui(item)
-        return False
-
-    async def _delete_comment_via_ui(self, item: dict) -> bool:
-        """Delete a comment using the Your Activity page's Select → Delete UI."""
-        meta = json.loads(item.get("metadata", "{}"))
-        comment_text = meta.get("text", "")
-        if not comment_text:
-            await self._log("No comment text to search for", "warn")
+        if "/accounts/login" in page.url:
+            await self._log("Redirected to login", "error")
             return False
 
-        page = await self._new_page()
+        # Check for error state
+        page_text = await page.evaluate("() => document.body?.innerText?.substring(0, 200) || ''")
+        if "failed to load" in page_text.lower():
+            await self._log("Page shows 'Failed to load' — Instagram is blocking", "error")
+            return False
+
+        return True
+
+    async def delete_item(self, item: dict) -> bool:
+        """Route to the right delete method."""
+        await self._check_cancelled()
+        meta = json.loads(item.get("metadata", "{}"))
+        if item["item_type"] == "like" and meta.get("mode") == "batch_delete":
+            return await self._batch_unlike_likes()
+        elif item["item_type"] == "comment" and meta.get("mode") == "batch_delete":
+            return await self._batch_delete_comments()
+        return False
+
+    async def _batch_delete_comments(self) -> bool:
+        """
+        Delete comments in tiny batches (1-3 at a time), verifying each round.
+        If verification fails, pause 5 min. If it fails again, stop entirely.
+        """
+        total_deleted = 0
+        page = await self.context.new_page()
+
         try:
-            await self._log(f"Deleting comment: '{comment_text[:50]}'")
-
-            # Navigate to Your Activity > Comments
-            try:
-                await page.goto(
-                    f"{IG_BASE}/your_activity/interactions/comments",
-                    wait_until="networkidle",
-                    timeout=30000,
-                )
-            except Exception:
-                pass
-            await page.wait_for_timeout(3000)
-
-            if "/accounts/login" in page.url:
-                await self._log("Redirected to login", "error")
+            await self._log("Opening Your Activity > Comments...")
+            if not await self._navigate_to_comments(page):
                 return False
 
-            # Click "Select" button to enter selection mode
-            select_clicked = await page.evaluate("""
-                () => {
-                    const els = document.querySelectorAll('button, [role="button"], a, span');
-                    for (const el of els) {
-                        const text = el.innerText?.trim().toLowerCase();
-                        if (text === 'select' || text === 'selecionar') {
-                            el.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-            """)
-            await self._log(f"Select button: {select_clicked}")
-            if not select_clicked:
-                await self._log("Could not find Select button", "warn")
-                return False
+            count_before = await self._count_comments(page)
+            await self._log(f"Starting batch delete. Comments on page: {count_before}")
 
-            await page.wait_for_timeout(random.uniform(1000, 2000))
+            if count_before == 0:
+                await self._log("No comments to delete")
+                return True
 
-            # Find and click the checkbox/row for our comment
-            search_text = comment_text[:40]
-            found = await page.evaluate("""
-                (searchText) => {
-                    // Find all text nodes that contain our comment
-                    const walker = document.createTreeWalker(
-                        document.body, NodeFilter.SHOW_TEXT, null, false
-                    );
-                    let node;
-                    while (node = walker.nextNode()) {
-                        if (node.textContent?.includes(searchText)) {
-                            // Found the text — walk up to find the clickable row
-                            let el = node.parentElement;
-                            for (let i = 0; i < 10 && el; i++) {
-                                // Look for a checkbox or clickable container
-                                const cb = el.querySelector('[role="checkbox"], input[type="checkbox"]');
-                                if (cb) {
-                                    cb.click();
-                                    return 'checkbox';
-                                }
-                                // Check if this element itself is clickable
-                                if (el.getAttribute('role') === 'checkbox') {
-                                    el.click();
-                                    return 'role-checkbox';
-                                }
-                                el = el.parentElement;
+            while not self._cancelled:
+                await self._check_cancelled()
+
+                # Random batch size: 1–3
+                batch_size = random.randint(1, 3)
+                await self._log(f"Selecting {batch_size} comment(s) to delete...")
+
+                # Step 1: Enter selection mode
+                select_ok = await page.evaluate("""
+                    () => {
+                        const els = document.querySelectorAll('span, button, [role="button"], a');
+                        for (const el of els) {
+                            const text = el.textContent?.trim().toLowerCase();
+                            if (text === 'select' || text === 'selecionar') {
+                                el.click();
+                                return true;
                             }
-                            // Fallback: click the nearest parent div
-                            node.parentElement?.closest('div[role="button"], div[style]')?.click();
-                            return 'fallback-click';
                         }
+                        return false;
                     }
-                    return null;
-                }
-            """, search_text)
-            await self._log(f"Comment selection: {found}")
-            if not found:
-                await self._log(f"Could not find comment on page", "warn")
-                return False
+                """)
+                if not select_ok:
+                    await self._log("Could not find 'Select' button", "error")
+                    break
 
-            await page.wait_for_timeout(random.uniform(1000, 2000))
+                await page.wait_for_timeout(random.uniform(800, 1500))
 
-            # Click Delete button
-            deleted = await page.evaluate("""
-                () => {
-                    const buttons = document.querySelectorAll('button, [role="button"]');
-                    for (const btn of buttons) {
-                        const text = btn.innerText?.trim().toLowerCase();
-                        if (text === 'delete' || text === 'excluir' || text === 'remove') {
-                            btn.click();
-                            return true;
+                # Step 2: Click checkboxes and collect account names
+                result = await page.evaluate("""
+                    (maxSelect) => {
+                        const checkboxes = document.querySelectorAll(
+                            '[role="checkbox"], input[type="checkbox"], ' +
+                            '[aria-label*="checkbox"], [aria-label*="select"]'
+                        );
+                        let count = 0;
+                        const names = [];
+                        for (const cb of checkboxes) {
+                            if (count >= maxSelect) break;
+                            const isChecked = cb.getAttribute('aria-checked') === 'true' || cb.checked === true;
+                            if (!isChecked) {
+                                cb.click();
+                                count++;
+                                const row = cb.closest('[role="listitem"], [role="row"], div[style]') || cb.parentElement?.parentElement;
+                                if (row) {
+                                    const links = row.querySelectorAll('a[href*="/"]');
+                                    for (const link of links) {
+                                        const href = link.getAttribute('href');
+                                        const match = href?.match(/^\\/([A-Za-z0-9_.]+)\\/?$/);
+                                        if (match && !['p','reel','explore','accounts','your_activity'].includes(match[1])) {
+                                            names.push('@' + match[1]);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                         }
+                        return {count, names};
                     }
-                    return false;
-                }
-            """)
-            await self._log(f"Delete button: {deleted}")
+                """, batch_size)
+                selected = result["count"]
+                selected_names = result.get("names", [])
 
-            if deleted:
-                await page.wait_for_timeout(random.uniform(1000, 2000))
-                # Confirm deletion dialog
+                if selected == 0:
+                    await self._log("Could not select any checkboxes, trying row clicks...")
+                    result = await page.evaluate("""
+                        (maxSelect) => {
+                            const rows = document.querySelectorAll('[role="listitem"], [role="row"]');
+                            let count = 0;
+                            const names = [];
+                            for (const row of rows) {
+                                if (count >= maxSelect) break;
+                                const text = row.innerText?.trim();
+                                if (text && text.length > 5) {
+                                    row.click();
+                                    count++;
+                                    const links = row.querySelectorAll('a[href*="/"]');
+                                    for (const link of links) {
+                                        const href = link.getAttribute('href');
+                                        const match = href?.match(/^\\/([A-Za-z0-9_.]+)\\/?$/);
+                                        if (match && !['p','reel','explore','accounts','your_activity'].includes(match[1])) {
+                                            names.push('@' + match[1]);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            return {count, names};
+                        }
+                    """, batch_size)
+                    selected = result["count"]
+                    selected_names = result.get("names", [])
+
+                if selected == 0:
+                    await self._log("Could not select any comments", "error")
+                    break
+
+                names_str = ", ".join(selected_names) if selected_names else "unknown"
+                await self._log(f"Selected {selected} comment(s) on: {names_str}")
+                await page.wait_for_timeout(random.uniform(500, 1000))
+
+                # Step 3: Click Delete
+                delete_ok = await page.evaluate("""
+                    () => {
+                        const buttons = document.querySelectorAll('button, [role="button"]');
+                        for (const btn of buttons) {
+                            const text = btn.innerText?.trim().toLowerCase();
+                            if (text === 'delete' || text === 'excluir') {
+                                btn.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                if not delete_ok:
+                    await self._log("Could not find Delete button", "error")
+                    break
+
+                await page.wait_for_timeout(random.uniform(1500, 2500))
+
+                # Step 4: Confirm deletion
                 await page.evaluate("""
                     () => {
                         const buttons = document.querySelectorAll('button, [role="button"]');
@@ -388,112 +304,509 @@ class InstagramClient(PlatformClient):
                         return false;
                     }
                 """)
-                await page.wait_for_timeout(random.uniform(1500, 3000))
-                await self._log("Comment deleted successfully")
-                return True
 
-            return False
+                await self._log("Deletion confirmed. Waiting for page to update...")
+                await page.wait_for_timeout(random.uniform(3000, 5000))
+
+                # Step 5: Reload and verify
+                if not await self._navigate_to_comments(page):
+                    await self._log("Page failed to load after deletion — Instagram may be blocking", "error")
+                    # Pause 5 minutes and retry
+                    verified = await self._pause_and_retry(page)
+                    if not verified:
+                        return total_deleted > 0
+                    count_after = await self._count_comments(page)
+                else:
+                    count_after = await self._count_comments(page)
+
+                actually_deleted = count_before - count_after
+
+                if actually_deleted > 0:
+                    total_deleted += actually_deleted
+                    await self._report_progress(deleted=total_deleted)
+                    await self._log(f"Verified: {actually_deleted} comment(s) removed. Remaining: {count_after}. Total deleted: {total_deleted}")
+                    count_before = count_after
+
+                    if count_after == 0:
+                        await self._log("All comments deleted!")
+                        return True
+
+                    # Human-like delay between batches: 20–40 seconds
+                    delay = random.uniform(20, 40)
+                    await self._log(f"Waiting {delay:.0f}s before next batch...")
+                    await asyncio.sleep(delay)
+                else:
+                    await self._log(f"Deletion not verified (count still {count_after}). Pausing 5 minutes...", "warn")
+                    verified = await self._pause_and_retry(page)
+                    if not verified:
+                        return total_deleted > 0
+                    count_before = await self._count_comments(page)
+
+            await self._log(f"Batch delete finished. Total deleted: {total_deleted}")
+            return total_deleted > 0
+
+        except asyncio.CancelledError:
+            await self._log(f"Cancelled. Deleted {total_deleted} comment(s) before stopping.")
+            return total_deleted > 0
         except Exception as e:
-            await self._log(f"Error deleting comment: {e}", "error")
-            return False
+            await self._log(f"Error in batch delete: {e}", "error")
+            return total_deleted > 0
         finally:
             await page.close()
 
-    # ── Likes: scan via API, unlike via post page ────────────────────
+    async def _pause_and_retry(self, page: Page) -> bool:
+        """
+        Pause for 5 minutes, reload, and check if the page works.
+        Returns True if recovered, False if still broken (task should stop).
+        """
+        await self._log("Pausing for 5 minutes before retrying...", "warn")
+
+        # Wait 5 minutes in 30-second increments (so cancel can interrupt)
+        for i in range(10):
+            await self._check_cancelled()
+            remaining = (10 - i) * 30
+            await self._log(f"Waiting... {remaining}s remaining")
+            await asyncio.sleep(30)
+
+        await self._log("Retrying after 5-minute pause...")
+
+        if not await self._navigate_to_comments(page):
+            await self._log("Page still broken after 5-minute pause. Stopping task to avoid further blocking.", "error")
+            return False
+
+        count = await self._count_comments(page)
+        await self._log(f"Page recovered. Comments remaining: {count}")
+        return True
+
+    # ── Likes ────────────────────────────────────────────────────────
 
     async def _fetch_likes(self) -> AsyncIterator[dict]:
-        """Navigate to Your Activity > Likes and capture liked posts."""
+        """Yield a single batch_delete item — actual work happens in delete_item."""
         page = await self._new_page()
         try:
-            captured = []
-
-            async def on_response(response):
-                url = response.url
-                if any(k in url for k in ["wbloks/fetch", "graphql", "liked"]):
-                    try:
-                        body = await response.text()
-                        if len(body) > 1000:
-                            captured.append({"url": url, "body": body})
-                    except Exception:
-                        pass
-
-            page.on("response", on_response)
-
+            await self._check_cancelled()
             await self._log("Navigating to Your Activity > Likes...")
             try:
                 await page.goto(
                     f"{IG_BASE}/your_activity/interactions/likes",
-                    wait_until="networkidle",
+                    wait_until="domcontentloaded",
                     timeout=30000,
                 )
             except Exception:
                 pass
             await page.wait_for_timeout(3000)
 
+            await self._log(f"On page: {page.url}")
+
             if "/accounts/login" in page.url:
-                await self._log("Redirected to login", "error")
+                await self._log("Redirected to login — session invalid", "error")
                 return
 
-            await self._log(f"On page: {page.url}, captured {len(captured)} responses")
-
-            # Scroll to load more
-            for scroll in range(5):
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(random.uniform(2000, 3000))
-
-            # Also extract shortcodes from visible links on the page
-            links = await page.evaluate("""
+            # The likes page may show a grid of thumbnails — scroll to load them
+            # and click the "Likes" tab if needed
+            await page.evaluate("""
                 () => {
-                    const results = [];
-                    const links = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
-                    links.forEach(link => {
-                        const href = link.getAttribute('href');
-                        const match = href.match(/\\/(?:p|reel)\\/([A-Za-z0-9_-]+)/);
-                        if (match) results.push(match[1]);
-                    });
-                    return [...new Set(results)];
-                }
-            """)
-            await self._log(f"Found {len(links)} liked posts from page links")
-
-            for sc in links:
-                yield {
-                    "platform_id": sc,
-                    "item_type": "like",
-                    "metadata": json.dumps({"shortcode": sc}),
-                }
-        finally:
-            await page.close()
-
-    async def _unlike_via_post(self, item: dict) -> bool:
-        """Unlike a post by navigating to it and clicking the heart button."""
-        meta = json.loads(item.get("metadata", "{}"))
-        shortcode = meta.get("shortcode", item["platform_id"])
-        page = await self._new_page()
-        try:
-            await self._log(f"Navigating to /{shortcode}/ to unlike")
-            await page.goto(f"{IG_BASE}/p/{shortcode}/", wait_until="domcontentloaded")
-            await page.wait_for_timeout(random.uniform(2000, 3000))
-
-            liked = await page.evaluate("""
-                () => {
-                    const unlike = document.querySelector('[aria-label="Unlike"]');
-                    if (unlike) {
-                        unlike.closest('button')?.click() || unlike.click();
-                        return true;
+                    // Click "Likes" tab/link if visible (in case we landed on the overview)
+                    const els = document.querySelectorAll('a, span, button, [role="tab"]');
+                    for (const el of els) {
+                        const text = el.textContent?.trim();
+                        if (text === 'Likes' || text === 'Curtidas') {
+                            el.click();
+                            break;
+                        }
                     }
-                    return false;
                 }
             """)
-            if liked:
-                await self._log(f"Unliked post {shortcode}")
-                await page.wait_for_timeout(random.uniform(500, 1500))
-                return True
-            else:
-                await self._log(f"Unlike button not found for {shortcode}", "warn")
-                return False
-        except Exception as e:
-            await self._log(f"Error unliking {shortcode}: {e}", "error")
-            return False
+            await page.wait_for_timeout(2000)
+
+            # Scroll down to load liked posts
+            for _ in range(3):
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(1500)
+
+            # Count likes by images/thumbnails in the grid (not timestamps — likes page uses thumbnails)
+            count = await page.evaluate("""
+                () => {
+                    // Try post/reel links first
+                    const postLinks = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
+                    if (postLinks.length > 0) return postLinks.length;
+
+                    // Try image thumbnails (likes grid shows images without direct post links)
+                    // Filter out nav/profile images by checking if they're inside the main content area
+                    const allImgs = document.querySelectorAll('img');
+                    let count = 0;
+                    for (const img of allImgs) {
+                        const src = img.src || '';
+                        const w = img.width || img.naturalWidth || 0;
+                        // Liked post thumbnails are typically square and > 50px, skip tiny icons
+                        if (w >= 50 && !src.includes('profile') && !src.includes('static')) {
+                            count++;
+                        }
+                    }
+                    return count;
+                }
+            """)
+            await self._log(f"Found {count} liked posts on page")
+
+            if count == 0:
+                await self._log("No likes found — page may not have loaded correctly")
+                # Log debug info
+                debug = await page.evaluate("""
+                    () => ({
+                        url: location.href,
+                        imgs: document.querySelectorAll('img').length,
+                        text: document.body?.innerText?.substring(0, 300) || ''
+                    })
+                """)
+                await self._log(f"Debug: {debug}")
+                return
+
+            yield {
+                "platform_id": "batch_likes",
+                "item_type": "like",
+                "metadata": json.dumps({"mode": "batch_delete", "initial_count": count}),
+            }
         finally:
             await page.close()
+
+    async def _count_likes(self, page: Page) -> int:
+        """Count liked posts by post links or image thumbnails."""
+        # Click Likes tab and scroll to ensure content is loaded
+        await page.evaluate("""
+            () => {
+                const els = document.querySelectorAll('a, span, button, [role="tab"]');
+                for (const el of els) {
+                    const text = el.textContent?.trim();
+                    if (text === 'Likes' || text === 'Curtidas') {
+                        el.click();
+                        break;
+                    }
+                }
+            }
+        """)
+        await page.wait_for_timeout(1500)
+        for _ in range(2):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(1000)
+
+        return await page.evaluate("""
+            () => {
+                const postLinks = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
+                if (postLinks.length > 0) return postLinks.length;
+                const allImgs = document.querySelectorAll('img');
+                let count = 0;
+                for (const img of allImgs) {
+                    const src = img.src || '';
+                    const w = img.width || img.naturalWidth || 0;
+                    if (w >= 50 && !src.includes('profile') && !src.includes('static')) count++;
+                }
+                return count;
+            }
+        """)
+
+    async def _navigate_to_likes(self, page: Page) -> bool:
+        """Navigate (or reload) the Your Activity > Likes page and ensure content loads."""
+        try:
+            await page.goto(
+                f"{IG_BASE}/your_activity/interactions/likes",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+        except Exception:
+            pass
+        await page.wait_for_timeout(3000)
+
+        if "/accounts/login" in page.url:
+            await self._log("Redirected to login", "error")
+            return False
+
+        page_text = await page.evaluate("() => document.body?.innerText?.substring(0, 200) || ''")
+        if "failed to load" in page_text.lower():
+            await self._log("Page shows 'Failed to load' — Instagram is blocking", "error")
+            return False
+
+        # Click Likes tab and scroll to load content
+        await page.evaluate("""
+            () => {
+                const els = document.querySelectorAll('a, span, button, [role="tab"]');
+                for (const el of els) {
+                    const text = el.textContent?.trim();
+                    if (text === 'Likes' || text === 'Curtidas') {
+                        el.click();
+                        break;
+                    }
+                }
+            }
+        """)
+        await page.wait_for_timeout(2000)
+        for _ in range(2):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(1000)
+
+        return True
+
+    async def _get_grid_image_srcs(self, page: Page) -> list[str]:
+        """Get the src of all thumbnail images currently in the likes grid."""
+        return await page.evaluate("""
+            () => {
+                const srcs = [];
+                const imgs = document.querySelectorAll('img');
+                for (const img of imgs) {
+                    const w = img.width || img.naturalWidth || 0;
+                    const src = img.src || '';
+                    if (w >= 50 && !src.includes('profile') && !src.includes('static')) {
+                        srcs.push(src);
+                    }
+                }
+                return srcs;
+            }
+        """)
+
+    async def _get_grid_fingerprints(self, page) -> list[str]:
+        """Get stable filename-based fingerprints of all grid images."""
+        return await page.evaluate("""
+            () => {
+                const imgs = document.querySelectorAll('img');
+                const files = [];
+                for (const img of imgs) {
+                    const alt = img.alt || '';
+                    const src = img.src || '';
+                    const w = img.width || img.naturalWidth || 0;
+                    if (w < 100) continue;
+                    if (alt.includes('profile picture')) continue;
+                    if (src.includes('static')) continue;
+                    const rect = img.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0 || rect.y <= 0) continue;
+                    const filename = src.split('?')[0].split('/').pop() || '';
+                    if (filename) files.push(filename);
+                }
+                return files;
+            }
+        """)
+
+    async def _batch_unlike_likes(self) -> bool:
+        """
+        Unlike likes one at a time, verifying each by checking
+        that the image fingerprint disappears from the grid.
+        """
+        total_unliked = 0
+        consecutive_failures = 0
+        page = await self.context.new_page()
+
+        try:
+            await self._log("Opening Your Activity > Likes...")
+            if not await self._navigate_to_likes(page):
+                return False
+
+            fingerprints_before = await self._get_grid_fingerprints(page)
+            await self._log(f"Starting batch unlike. Likes visible: {len(fingerprints_before)}")
+
+            if len(fingerprints_before) == 0:
+                await self._log("No likes to remove")
+                return True
+
+            while not self._cancelled:
+                await self._check_cancelled()
+
+                batch_size = random.randint(1, 3)
+                await self._log(f"Removing {batch_size} like(s)...")
+
+                # Get fingerprints before this batch
+                fp_before = await self._get_grid_fingerprints(page)
+
+                # Step 1: Click "Select"
+                select_pos = await page.evaluate("""
+                    () => {
+                        const els = document.querySelectorAll('span, button, [role="button"], a');
+                        for (const el of els) {
+                            const text = el.textContent?.trim().toLowerCase();
+                            if (text === 'select' || text === 'selecionar') {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if not select_pos:
+                    await self._log("Could not find 'Select' button", "error")
+                    break
+
+                await page.mouse.click(select_pos["x"], select_pos["y"])
+                await page.wait_for_timeout(1500)
+
+                # Step 2: Click thumbnails (batch_size items, top-left first)
+                grid_items = await page.evaluate("""
+                    () => {
+                        const result = [];
+                        const imgs = document.querySelectorAll('img');
+                        for (const img of imgs) {
+                            const alt = img.alt || '';
+                            const src = img.src || '';
+                            const w = img.width || img.naturalWidth || 0;
+                            if (w < 100) continue;
+                            if (alt.includes('profile picture')) continue;
+                            if (src.includes('static')) continue;
+                            const rect = img.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0 && rect.y > 0) {
+                                result.push({
+                                    src_file: src.split('?')[0].split('/').pop() || '',
+                                    x: rect.x + rect.width / 2,
+                                    y: rect.y + rect.height / 2,
+                                });
+                            }
+                        }
+                        result.sort((a, b) => {
+                            const rowA = Math.floor(a.y / 100);
+                            const rowB = Math.floor(b.y / 100);
+                            if (rowA !== rowB) return rowA - rowB;
+                            return a.x - b.x;
+                        });
+                        return result;
+                    }
+                """)
+
+                if len(grid_items) == 0:
+                    await self._log("No grid thumbnails found — done or page error", "warn")
+                    break
+
+                actual_batch = min(batch_size, len(grid_items))
+                selected_files = []
+                for i in range(actual_batch):
+                    item = grid_items[i]
+                    await page.mouse.click(item["x"], item["y"])
+                    selected_files.append(item["src_file"])
+                    await page.wait_for_timeout(500)
+
+                await self._log(f"Selected {actual_batch} thumbnail(s)")
+                await page.wait_for_timeout(500)
+
+                # Step 3: Click Unlike (bottom bar)
+                unlike_pos = await page.evaluate("""
+                    () => {
+                        const els = document.querySelectorAll('span, div, button');
+                        for (const el of els) {
+                            const text = el.textContent?.trim();
+                            const tag = el.tagName.toLowerCase();
+                            if (tag === 'title') continue;
+                            if (text === 'Unlike' || text === 'Descurtir') {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                """)
+
+                if not unlike_pos:
+                    await self._log("Could not find Unlike button", "error")
+                    break
+
+                await page.mouse.click(unlike_pos["x"], unlike_pos["y"])
+                await page.wait_for_timeout(2000)
+
+                # Step 4: Click confirmation dialog Unlike (closest to viewport center)
+                confirm_pos = await page.evaluate("""
+                    () => {
+                        const allEls = document.querySelectorAll('button, [role="button"], span, div, a');
+                        const candidates = [];
+                        for (const el of allEls) {
+                            const tag = el.tagName.toLowerCase();
+                            if (tag === 'title' || tag === 'svg') continue;
+                            const text = el.textContent?.trim();
+                            if (text !== 'Unlike' && text !== 'Descurtir') continue;
+                            if (el.children.length > 1) continue;
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width <= 0 || rect.height <= 0) continue;
+                            if (rect.height > 80) continue;
+                            const cy = window.innerHeight / 2;
+                            const cx = window.innerWidth / 2;
+                            const dist = Math.sqrt(
+                                Math.pow(rect.x + rect.width/2 - cx, 2) +
+                                Math.pow(rect.y + rect.height/2 - cy, 2)
+                            );
+                            candidates.push({
+                                x: rect.x + rect.width/2,
+                                y: rect.y + rect.height/2,
+                                dist
+                            });
+                        }
+                        candidates.sort((a, b) => a.dist - b.dist);
+                        return candidates.length > 0 ? candidates[0] : null;
+                    }
+                """)
+
+                if not confirm_pos:
+                    await self._log("No confirmation dialog found", "warn")
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        await self._log("Too many failures, stopping", "error")
+                        break
+                    # Reload page and retry
+                    await self._navigate_to_likes(page)
+                    continue
+
+                await page.mouse.click(confirm_pos["x"], confirm_pos["y"])
+                await page.wait_for_timeout(3000)
+
+                # Verify by reloading and checking fingerprints
+                await self._navigate_to_likes(page)
+                fp_after = await self._get_grid_fingerprints(page)
+                removed = set(selected_files) - set(fp_after)
+
+                if removed:
+                    total_unliked += actual_batch
+                    consecutive_failures = 0
+                    await self._report_progress(deleted=total_unliked)
+                    await self._log(f"Verified: {len(removed)} like(s) removed. Total: {total_unliked}")
+                else:
+                    consecutive_failures += 1
+                    await self._log(f"Unlike not verified — images still present (failure {consecutive_failures}/3)", "warn")
+                    if consecutive_failures >= 3:
+                        await self._log("3 consecutive failures, pausing...")
+                        if not await self._pause_and_retry_likes(page):
+                            break
+                        consecutive_failures = 0
+
+                # Random delay between batches (2-5 seconds)
+                delay = random.uniform(2, 5)
+                await page.wait_for_timeout(int(delay * 1000))
+
+            await self._log(f"Batch unlike finished. Total unliked: {total_unliked}")
+            return total_unliked > 0
+
+        except asyncio.CancelledError:
+            await self._log(f"Cancelled. Unliked {total_unliked} post(s) before stopping.")
+            return total_unliked > 0
+        except Exception as e:
+            await self._log(f"Error in batch unlike: {e}", "error")
+            return total_unliked > 0
+        finally:
+            await page.close()
+
+    async def _pause_and_retry_likes(self, page: Page) -> bool:
+        """
+        Pause for 5 minutes, reload likes page, and check if it works.
+        Returns True if recovered, False if still broken.
+        """
+        await self._log("Pausing for 5 minutes before retrying...", "warn")
+
+        for i in range(10):
+            await self._check_cancelled()
+            remaining = (10 - i) * 30
+            await self._log(f"Waiting... {remaining}s remaining")
+            await asyncio.sleep(30)
+
+        await self._log("Retrying after 5-minute pause...")
+
+        if not await self._navigate_to_likes(page):
+            await self._log("Page still broken after 5-minute pause. Stopping task to avoid further blocking.", "error")
+            return False
+
+        count = await self._count_likes(page)
+        await self._log(f"Page recovered. Likes remaining: {count}")
+        return True
