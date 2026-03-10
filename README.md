@@ -32,7 +32,7 @@ local SQLite database. Nothing is sent to any external server.
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/socialcleaner.git
+git clone https://github.com/cyberjulio/socialcleaner.git
 cd socialcleaner
 
 # Create and activate a Python virtual environment
@@ -64,7 +64,7 @@ sudo apt-get update
 sudo apt-get install -y python3 python3-venv nodejs npm
 
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/socialcleaner.git
+git clone https://github.com/cyberjulio/socialcleaner.git
 cd socialcleaner
 
 # Create and activate a Python virtual environment
