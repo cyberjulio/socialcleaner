@@ -19,6 +19,7 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
   const [historyLoaded, setHistoryLoaded] = useState(false)
   const [copied, setCopied] = useState(false)
   const [autoCloseIn, setAutoCloseIn] = useState(null)
+  const [eta, setEta] = useState(null)
   const sourceRef = useRef(null)
   const logEndRef = useRef(null)
   const autoCloseRef = useRef(null)
@@ -88,6 +89,8 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
           deleted: data.deleted,
           ...(data.total != null ? { total_items: data.total } : {}),
         }))
+      } else if (eventType === 'eta') {
+        setEta(data.estimate)
       } else if (eventType === 'log') {
         setLogs(prev => [...prev, { ts, level: data.level || 'info', msg: data.message }])
       }
@@ -272,6 +275,12 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
         </span>
         <span>{progress}%</span>
       </div>
+
+      {eta && !['completed', 'failed', 'cancelled'].includes(task.status) && (
+        <div className="mt-1.5 text-xs text-gray-500">
+          Estimated duration: {eta}
+        </div>
+      )}
 
       {notice && (
         <div className="mt-2 p-2 text-xs bg-yellow-900/50 border border-yellow-700 rounded text-yellow-300">

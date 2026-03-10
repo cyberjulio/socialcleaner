@@ -9,6 +9,7 @@ class PlatformClient(ABC):
         self.cookies = cookies
         self._log_callback = None
         self._progress_callback = None
+        self._event_callback = None
 
     def set_log_callback(self, callback):
         """Set a callback for live logging to the frontend."""
@@ -17,6 +18,15 @@ class PlatformClient(ABC):
     def set_progress_callback(self, callback):
         """Set a callback for reporting batch progress (deleted count, total)."""
         self._progress_callback = callback
+
+    def set_event_callback(self, callback):
+        """Set a callback for emitting arbitrary SSE events."""
+        self._event_callback = callback
+
+    async def _emit_event(self, event_type: str, data: dict):
+        """Emit a custom SSE event to the frontend."""
+        if self._event_callback:
+            await self._event_callback(event_type, data)
 
     async def _log(self, message: str, level: str = "info"):
         """Log to both Python logger and optional frontend callback."""

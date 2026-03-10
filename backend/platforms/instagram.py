@@ -326,6 +326,7 @@ class InstagramClient(PlatformClient):
             # ETA estimate
             eta = self._estimate_duration(count_before)
             await self._log(f"Estimated duration: {eta}")
+            await self._emit_event("eta", {"estimate": eta, "total_items": count_before})
 
             while not self._cancelled:
                 # Enforce session time and daily cap limits
@@ -793,6 +794,7 @@ class InstagramClient(PlatformClient):
             # ETA estimate
             eta = self._estimate_duration(len(fingerprints_before))
             await self._log(f"Estimated duration: {eta}")
+            await self._emit_event("eta", {"estimate": eta, "total_items": len(fingerprints_before)})
 
             while not self._cancelled:
                 # Enforce session time and daily cap limits

@@ -194,6 +194,11 @@ class WorkerEngine:
                     await progress_db.close()
             client.set_progress_callback(report_progress)
 
+            # Wire up generic event emitter for custom SSE events (e.g. ETA)
+            async def emit_event(event_type, data):
+                await event_bus.publish(task_id, event_type, data)
+            client.set_event_callback(emit_event)
+
             rate_limiter = RateLimiter(task["platform"])
 
             # Phase 1: Scan for items (if not already scanned)
