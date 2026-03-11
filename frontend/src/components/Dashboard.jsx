@@ -6,12 +6,13 @@ export default function Dashboard({ sessions, tasks, onRefresh, onError }) {
   const [creating, setCreating] = useState(null) // session id being used
 
   const handleCreate = async (sessionId, targetType) => {
+    setCreating(null)  // immediately hide action buttons
     try {
       await api.createTask(sessionId, targetType)
-      onRefresh()
     } catch (e) {
       onError(e.message)
     }
+    await onRefresh()
   }
 
   const handleDelete = async (taskId) => {
@@ -66,13 +67,13 @@ export default function Dashboard({ sessions, tasks, onRefresh, onError }) {
                   {creating === s.id ? (
                     <div className="flex gap-2">
                       <button
-                        onClick={() => { handleCreate(s.id, 'likes'); setCreating(null) }}
+                        onClick={() => handleCreate(s.id, 'likes')}
                         className="px-3 py-1.5 text-xs bg-orange-700 hover:bg-orange-600 rounded-lg transition"
                       >
                         Unlike All
                       </button>
                       <button
-                        onClick={() => { handleCreate(s.id, 'comments'); setCreating(null) }}
+                        onClick={() => handleCreate(s.id, 'comments')}
                         className="px-3 py-1.5 text-xs bg-red-700 hover:bg-red-600 rounded-lg transition"
                       >
                         Delete Comments

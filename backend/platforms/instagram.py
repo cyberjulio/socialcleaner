@@ -240,7 +240,6 @@ class InstagramClient(PlatformClient):
                 return
 
             count = await self._count_comments(page)
-            await self._log(f"Found {count} comments on page")
 
             if count == 0:
                 await self._log("No comments to delete")
@@ -316,17 +315,13 @@ class InstagramClient(PlatformClient):
             if not await self._navigate_to_comments(page):
                 return False
 
-            count_before = await self._count_comments(page)
-            await self._log(f"Comments on page: {count_before}")
+            count_initial = await self._count_comments(page)
 
-            if count_before == 0:
+            if count_initial == 0:
                 await self._log("No comments to delete")
                 return True
 
-            # ETA estimate
-            eta = self._estimate_duration(count_before)
-            await self._log(f"Estimated duration: {eta}")
-            await self._emit_event("eta", {"estimate": eta, "total_items": count_before})
+            await self._log("Comments found, starting batch deletion...")
 
             while not self._cancelled:
                 # Enforce session time and daily cap limits
@@ -358,57 +353,35 @@ class InstagramClient(PlatformClient):
                 await page.mouse.click(select_pos["x"], select_pos["y"])
                 await page.wait_for_timeout(1500)
 
-                # Step 2: Click checkboxes with scroll-to-load
-                selected_count = 0
-                scroll_attempts = 0
-                while selected_count < batch_size and scroll_attempts < 10:
-                    checkboxes = await page.evaluate("""
-                        () => {
-                            const cbs = document.querySelectorAll(
-                                '[role="checkbox"], input[type="checkbox"], ' +
-                                '[aria-label*="checkbox"], [aria-label*="select"], ' +
-                                '[aria-label*="Toggle"]'
-                            );
-                            const results = [];
-                            for (const cb of cbs) {
-                                const checked = cb.getAttribute('aria-checked') === 'true' || cb.checked === true;
-                                if (checked) continue;
-                                const rect = cb.getBoundingClientRect();
-                                if (rect.width > 0 && rect.height > 0 && rect.y > 100) {
-                                    results.push({
-                                        x: rect.x + rect.width/2,
-                                        y: rect.y + rect.height/2
-                                    });
-                                }
-                            }
-                            return results;
-                        }
-                    """)
+                # Capture fingerprints of visible comments before selection
+                fp_before = await self._get_comment_fingerprints(page)
 
-                    if len(checkboxes) == 0 and selected_count == 0:
-                        break
+                # Step 2: Click checkboxes using Playwright locators with force=True
+                # (bypasses the overlapping "Image with button" element).
+                # Iterate through all checkbox elements, scroll each into view.
+                all_cbs = page.locator('[aria-label="Toggle checkbox"]')
+                total_cbs = await all_cbs.count()
+                clicked_count = 0
 
-                    for cb in checkboxes:
-                        if selected_count >= batch_size:
-                            break
-                        await page.mouse.click(cb["x"], cb["y"])
-                        selected_count += 1
-                        click_delay = random.randint(CLICK_DELAY_MIN, CLICK_DELAY_MAX)
-                        await page.wait_for_timeout(click_delay)
+                for i in range(min(total_cbs, batch_size)):
+                    cb = all_cbs.nth(i)
+                    try:
+                        await cb.scroll_into_view_if_needed(timeout=2000)
+                        await cb.click(force=True, timeout=3000)
+                        clicked_count += 1
+                        await page.wait_for_timeout(random.randint(CLICK_DELAY_MIN, CLICK_DELAY_MAX))
+                    except Exception:
+                        continue
 
-                    if selected_count >= batch_size:
-                        break
-
-                    await page.evaluate("window.scrollBy(0, 400)")
-                    await page.wait_for_timeout(1000)
-                    scroll_attempts += 1
-
-                actual_batch = selected_count
-                if actual_batch == 0:
+                if clicked_count == 0:
                     await self._log("No checkboxes found — done or page error", "warn")
                     break
 
-                await self._log(f"Selected {actual_batch} comment(s)")
+                # Read how many Instagram actually registered
+                selected_count = await self._read_ui_selected(page)
+                if selected_count == 0:
+                    selected_count = clicked_count  # fallback if UI text not found
+                await self._log(f"Selected {selected_count} comment(s)")
 
                 # Optional reading pause before action
                 await self._reading_pause()
@@ -438,29 +411,39 @@ class InstagramClient(PlatformClient):
                 await page.mouse.click(delete_pos["x"], delete_pos["y"])
                 await page.wait_for_timeout(2000)
 
-                # Step 4: Click confirmation Delete (closest to viewport center)
+                # Step 4: Click confirmation Delete INSIDE the dialog
+                # Instagram doesn't use [role="dialog"]. Instead, find the Delete
+                # button that's NOT the bottom-bar one (the confirmation appears as
+                # an overlay, typically in the center of the viewport).
                 confirm_pos = await page.evaluate("""
                     () => {
-                        const allEls = document.querySelectorAll('button, [role="button"], span, div, a');
+                        const vh = window.innerHeight;
+                        const vw = window.innerWidth;
                         const candidates = [];
-                        for (const el of allEls) {
-                            const tag = el.tagName.toLowerCase();
-                            if (tag === 'title' || tag === 'svg') continue;
+                        const els = document.querySelectorAll('button, [role="button"], span, a, div');
+                        for (const el of els) {
                             const text = el.textContent?.trim();
                             if (text !== 'Delete' && text !== 'Excluir') continue;
-                            if (el.children.length > 1) continue;
+                            if (el.children.length > 2) continue;
                             const rect = el.getBoundingClientRect();
                             if (rect.width <= 0 || rect.height <= 0 || rect.height > 80) continue;
-                            const cy = window.innerHeight / 2;
-                            const cx = window.innerWidth / 2;
-                            const dist = Math.sqrt(
-                                Math.pow(rect.x + rect.width/2 - cx, 2) +
-                                Math.pow(rect.y + rect.height/2 - cy, 2)
-                            );
-                            candidates.push({x: rect.x + rect.width/2, y: rect.y + rect.height/2, dist});
+                            // Dialog buttons appear in the center portion of the screen
+                            // Bottom bar is at the very bottom (y > vh - 80)
+                            candidates.push({
+                                x: rect.x + rect.width/2,
+                                y: rect.y + rect.height/2,
+                                w: rect.width,
+                                h: rect.height,
+                                distFromCenter: Math.abs(rect.y + rect.height/2 - vh/2)
+                            });
                         }
-                        candidates.sort((a, b) => a.dist - b.dist);
-                        return candidates.length > 0 ? candidates[0] : null;
+                        if (candidates.length === 0) return null;
+                        // If multiple Delete buttons, pick the one closest to viewport center
+                        // (the dialog one), NOT the bottom bar one
+                        candidates.sort((a, b) => a.distFromCenter - b.distFromCenter);
+                        // Safety: if there's only one and it's at the bottom, it's the bar button
+                        if (candidates.length === 1 && candidates[0].y > vh - 100) return null;
+                        return candidates[0];
                     }
                 """)
 
@@ -473,39 +456,11 @@ class InstagramClient(PlatformClient):
                     await self._navigate_to_comments(page)
                     continue
 
+                await self._log(f"Clicking confirm at ({confirm_pos['x']:.0f}, {confirm_pos['y']:.0f})")
                 await page.mouse.click(confirm_pos["x"], confirm_pos["y"])
                 await page.wait_for_timeout(3000)
 
-                # Step 5: Verify dialog dismissed
-                dialog_still_open = await page.evaluate("""
-                    () => {
-                        const els = document.querySelectorAll('*');
-                        for (const el of els) {
-                            const text = el.textContent?.trim();
-                            if (text === 'Delete this comment?' || text === 'Excluir este comentário?')
-                                return true;
-                        }
-                        return false;
-                    }
-                """)
-
-                if dialog_still_open:
-                    consecutive_failures += 1
-                    await self._log(f"Confirm click didn't dismiss dialog, failure {consecutive_failures}/3", "warn")
-                    if consecutive_failures >= 3:
-                        await self._log("Too many confirm failures, stopping", "error")
-                        break
-                    await self._navigate_to_comments(page)
-                    continue
-
-                # Success
-                total_deleted += actual_batch
-                self._record_actions(actual_batch)
-                consecutive_failures = 0
-                await self._report_progress(deleted=total_deleted)
-                await self._log(f"Deleted {actual_batch} comment(s). Total: {total_deleted}")
-
-                # Reload and check for action block
+                # Step 5: Reload and verify deletion via fingerprints
                 if not await self._navigate_to_comments(page):
                     await self._log("Page failed to load after deletion", "error")
                     verified = await self._pause_and_retry(page)
@@ -517,13 +472,26 @@ class InstagramClient(PlatformClient):
                     if not await self._navigate_to_comments(page):
                         return total_deleted > 0
 
-                # Check if any comments remain
-                count_after = await self._count_comments(page)
-                if count_after == 0:
-                    await self._log("All comments deleted!")
-                    return True
+                fp_after = await self._get_comment_fingerprints(page)
+                removed = set(fp_before) - set(fp_after)
 
-                await self._log(f"Comments remaining on page: {count_after}")
+                if removed:
+                    batch_deleted = selected_count if selected_count > 0 else clicked_count
+                    total_deleted += batch_deleted
+                    self._record_actions(batch_deleted)
+                    consecutive_failures = 0
+                    await self._report_progress(deleted=total_deleted)
+                    await self._log(f"Batch done: {batch_deleted} deleted. Total: {total_deleted}")
+                else:
+                    consecutive_failures += 1
+                    await self._log(
+                        f"Deletion not verified — same comments still present (failure {consecutive_failures}/3)",
+                        "error"
+                    )
+                    if consecutive_failures >= 3:
+                        await self._log("Deletion is not working — stopping to avoid wasted actions", "error")
+                        break
+                    continue
 
                 # Inter-batch delay (20-45 seconds)
                 await self._inter_batch_delay()
@@ -745,6 +713,45 @@ class InstagramClient(PlatformClient):
                     }
                 }
                 return srcs;
+            }
+        """)
+
+    async def _read_ui_selected(self, page) -> int:
+        """Read the 'N selected' counter from Instagram's UI. Returns 0 if not found."""
+        return await page.evaluate("""
+            () => {
+                const els = document.querySelectorAll('span');
+                for (const el of els) {
+                    const text = el.textContent?.trim() || '';
+                    const match = text.match(/(\\d+)\\s*selected/i);
+                    if (match) return parseInt(match[1]);
+                }
+                return 0;
+            }
+        """)
+
+    async def _get_comment_fingerprints(self, page) -> list[str]:
+        """Get text-based fingerprints of visible comment items on the Your Activity > Comments page."""
+        return await page.evaluate("""
+            () => {
+                const fingerprints = [];
+                // Each comment row on the activity page typically contains the comment text.
+                // We look for the list items or row containers that hold individual comments.
+                const rows = document.querySelectorAll(
+                    '[role="listitem"], [role="row"], article, ' +
+                    'div[style*="flex"] > div[style*="flex"]'
+                );
+                for (const row of rows) {
+                    const rect = row.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0 || rect.height > 200) continue;
+                    // Extract meaningful text (skip very short or generic text)
+                    const text = (row.innerText || '').trim().replace(/\\s+/g, ' ');
+                    if (text.length > 10 && text.length < 500) {
+                        fingerprints.push(text);
+                    }
+                }
+                // Deduplicate while preserving order
+                return [...new Set(fingerprints)];
             }
         """)
 

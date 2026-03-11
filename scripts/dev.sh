@@ -21,9 +21,9 @@ if [ ! -d frontend/node_modules ]; then
   (cd frontend && npm install)
 fi
 
-# Kill any previous instances
-pkill -f "uvicorn backend.main" 2>/dev/null || true
-pkill -f "node.*vite" 2>/dev/null || true
+# Kill any previous instances by port
+lsof -ti :8000 | xargs kill -9 2>/dev/null || true
+lsof -ti :5173 | xargs kill -9 2>/dev/null || true
 sleep 1
 
 echo "Starting backend..."

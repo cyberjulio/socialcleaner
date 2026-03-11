@@ -48,6 +48,8 @@ export const api = {
     source.addEventListener('item_failed', (e) => onEvent('item_failed', JSON.parse(e.data)))
     source.addEventListener('rate_limited', (e) => onEvent('rate_limited', JSON.parse(e.data)))
     source.addEventListener('checkpoint_required', (e) => onEvent('checkpoint_required', JSON.parse(e.data)))
+    source.addEventListener('batch_progress', (e) => onEvent('batch_progress', JSON.parse(e.data)))
+    source.addEventListener('eta', (e) => onEvent('eta', JSON.parse(e.data)))
     source.addEventListener('log', (e) => onEvent('log', JSON.parse(e.data)))
     return source
   },

@@ -29,8 +29,9 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
   }, [initialTask])
 
   useEffect(() => {
-    if (logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    const el = logEndRef.current
+    if (el?.parentElement) {
+      el.parentElement.scrollTop = el.parentElement.scrollHeight
     }
   }, [logs])
 
@@ -41,7 +42,13 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
     }
   }, [])
 
+  const isTerminal = ['completed', 'failed', 'cancelled'].includes(task.status)
+
   useEffect(() => {
+    // Don't open SSE connections for completed/failed/cancelled tasks
+    // This prevents exhausting the browser's connection pool (6 per origin)
+    if (isTerminal) return
+
     const source = api.streamTask(task.id, (eventType, data) => {
       const ts = new Date().toLocaleTimeString()
       if (eventType === 'task_status') {
@@ -98,7 +105,7 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
     sourceRef.current = source
 
     return () => source.close()
-  }, [task.id])
+  }, [task.id, isTerminal])
 
   const togglePause = async () => {
     const newStatus = task.status === 'paused' ? 'running' : 'paused'
@@ -130,9 +137,13 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
     }
   }
 
-  const progress = task.total_items > 0
-    ? Math.min(100, Math.round(((task.deleted + task.failed) / task.total_items) * 100))
-    : (task.deleted > 0 ? 100 : 0)
+  // Batch operations have total_items <= 1 but deleted keeps growing — don't show % for those
+  const isBatch = task.total_items <= 1 && task.deleted > 1
+  const progress = isBatch
+    ? null
+    : task.total_items > 0
+      ? Math.min(100, Math.round(((task.deleted + task.failed) / task.total_items) * 100))
+      : (task.deleted > 0 ? 100 : 0)
 
   const LOG_COLORS = {
     info: 'text-gray-400',
@@ -257,23 +268,25 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
         </div>
       </div>
 
-      {/* Progress bar */}
-      <div className="w-full bg-gray-800 rounded-full h-2 mb-2">
-        <div
-          className="bg-blue-500 h-2 rounded-full transition-all duration-300"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
+      {/* Progress bar — hide for batch operations where total is unknown */}
+      {progress !== null && (
+        <div className="w-full bg-gray-800 rounded-full h-2 mb-2">
+          <div
+            className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      )}
 
       <div className="flex justify-between text-xs text-gray-400">
         <span>{task.deleted} deleted{task.failed > 0 ? ` / ${task.failed} failed` : ''}</span>
         <span>
           {task.status === 'scanning'
             ? `Found ${task.total_items} items...`
-            : `${task.total_items} total`
+            : isBatch ? '' : `${task.total_items} total`
           }
         </span>
-        <span>{progress}%</span>
+        {progress !== null && <span>{progress}%</span>}
       </div>
 
       {eta && !['completed', 'failed', 'cancelled'].includes(task.status) && (
