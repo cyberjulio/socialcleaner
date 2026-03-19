@@ -420,35 +420,34 @@ class InstagramClient(PlatformClient):
                 await self._log(f"Clicking Delete at ({delete_pos['x']:.0f}, {delete_pos['y']:.0f})")
                 await page.mouse.click(delete_pos["x"], delete_pos["y"])
 
-                # Step 4: Wait for the confirmation dialog/sheet then click its Delete.
-                # We detect dialog presence by waiting for a "Cancel" button —
-                # that only appears inside the confirmation, never in the action bar.
-                confirm_pos = None
+                # Step 4: Wait for the confirmation dialog then click its Delete via
+                # el.click() (JS dispatch) — bypasses overlay interception that
+                # breaks page.mouse.click on React SPAs.
+                # We anchor on "Cancel" appearing — it only exists in the dialog.
+                confirmed = False
                 for _attempt in range(10):  # poll up to ~3s
                     await page.wait_for_timeout(300)
-                    confirm_pos = await page.evaluate(
+                    result = await page.evaluate(
                         """(actionBarY) => {
-                            // Look for a Cancel button as an anchor — it only exists in
-                            // the confirmation dialog, so if it's present the dialog is open.
                             const allEls = document.querySelectorAll(
                                 'button, [role="button"], div, span'
                             );
-                            let cancelEl = null;
+                            // Confirm dialog is open when Cancel is visible
+                            let dialogOpen = false;
                             for (const el of allEls) {
                                 const t = (el.innerText || el.textContent || '').trim();
                                 if (t === 'Cancel' || t === 'Cancelar') {
                                     const r = el.getBoundingClientRect();
                                     if (r.width > 0 && r.height > 0 && r.height <= 80) {
-                                        cancelEl = el;
+                                        dialogOpen = true;
                                         break;
                                     }
                                 }
                             }
-                            if (!cancelEl) return null;  // dialog not open yet
+                            if (!dialogOpen) return null;
 
-                            // Dialog is open — find the Delete button that is NOT
-                            // at the action bar y-position
-                            const vh = window.innerHeight;
+                            // Dialog is open — find and JS-click the Delete button
+                            // that is NOT the action bar button (different y)
                             const candidates = [];
                             for (const el of allEls) {
                                 const text = (el.innerText || el.textContent || '').trim();
@@ -457,23 +456,27 @@ class InstagramClient(PlatformClient):
                                 const rect = el.getBoundingClientRect();
                                 if (rect.width <= 0 || rect.height <= 0 || rect.height > 80) continue;
                                 const cy = rect.y + rect.height / 2;
-                                if (Math.abs(cy - actionBarY) < 30) continue;  // skip action bar
-                                candidates.push({
-                                    x: rect.x + rect.width / 2,
-                                    y: cy,
-                                    distFromCenter: Math.abs(cy - vh / 2),
-                                });
+                                if (Math.abs(cy - actionBarY) < 30) continue;
+                                candidates.push({el, cx: rect.x + rect.width/2, cy});
                             }
                             if (candidates.length === 0) return null;
-                            candidates.sort((a, b) => a.distFromCenter - b.distFromCenter);
-                            return candidates[0];
+                            // Pick closest to viewport center
+                            const vh = window.innerHeight;
+                            candidates.sort((a, b) =>
+                                Math.abs(a.cy - vh/2) - Math.abs(b.cy - vh/2)
+                            );
+                            const best = candidates[0];
+                            best.el.click();
+                            return {x: best.cx, y: best.cy};
                         }""",
                         delete_pos["y"],
                     )
-                    if confirm_pos:
+                    if result:
+                        await self._log(f"Clicking confirm at ({result['x']:.0f}, {result['y']:.0f})")
+                        confirmed = True
                         break
 
-                if not confirm_pos:
+                if not confirmed:
                     await self._log("No confirmation dialog found", "warn")
                     consecutive_failures += 1
                     if consecutive_failures >= 3:
@@ -482,8 +485,6 @@ class InstagramClient(PlatformClient):
                     await self._navigate_to_comments(page)
                     continue
 
-                await self._log(f"Clicking confirm at ({confirm_pos['x']:.0f}, {confirm_pos['y']:.0f})")
-                await page.mouse.click(confirm_pos["x"], confirm_pos["y"])
                 await page.wait_for_timeout(3000)
 
                 # Step 5: Reload and verify deletion via fingerprints
