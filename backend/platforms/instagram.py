@@ -332,8 +332,8 @@ class InstagramClient(PlatformClient):
                 batch_size = random.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
                 await self._log(f"Batch: removing up to {batch_size} comment(s)... [daily: {self._daily_actions}/{DAILY_CAP}]")
 
-                # Capture fingerprints BEFORE entering selection mode (normal DOM state)
-                fp_before = await self._get_comment_fingerprints(page)
+                # Count comments BEFORE deletion (used to verify batch succeeded)
+                count_before = await self._count_comments(page)
 
                 # Step 1: Click Select
                 select_pos = await page.evaluate("""
@@ -498,20 +498,23 @@ class InstagramClient(PlatformClient):
                     if not await self._navigate_to_comments(page):
                         return total_deleted > 0
 
-                fp_after = await self._get_comment_fingerprints(page)
-                removed = set(fp_before) - set(fp_after)
+                count_after = await self._count_comments(page)
+                actually_removed = count_before - count_after
 
-                if removed:
-                    batch_deleted = selected_count if selected_count > 0 else clicked_count
+                if actually_removed > 0:
+                    batch_deleted = actually_removed
                     total_deleted += batch_deleted
                     self._record_actions(batch_deleted)
                     consecutive_failures = 0
                     await self._report_progress(deleted=total_deleted)
                     await self._log(f"Batch done: {batch_deleted} deleted. Total: {total_deleted}")
+                elif count_after == 0:
+                    await self._log("No comments remaining — done!")
+                    break
                 else:
                     consecutive_failures += 1
                     await self._log(
-                        f"Deletion not verified — same comments still present (failure {consecutive_failures}/3)",
+                        f"Deletion not verified — count unchanged {count_before} (failure {consecutive_failures}/3)",
                         "error"
                     )
                     if consecutive_failures >= 3:
