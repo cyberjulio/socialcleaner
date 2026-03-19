@@ -222,13 +222,20 @@ class InstagramClient(PlatformClient):
                 )
             except Exception:
                 pass
-            await page.wait_for_timeout(3000)
 
-            if "/accounts/login" in page.url:
-                await self._log("Redirected to login — session invalid", "error")
-                return
-
-            count = await self._count_comments(page)
+            # Wait for page to fully render — retry up to 3x with 3s gaps
+            count = 0
+            for attempt in range(3):
+                await page.wait_for_timeout(3000)
+                if "/accounts/login" in page.url:
+                    await self._log("Redirected to login — session invalid", "error")
+                    return
+                count = await self._count_comments(page)
+                if count > 0:
+                    break
+                page_url = page.url
+                page_text = await page.evaluate("() => document.body?.innerText?.substring(0, 300) || ''")
+                await self._log(f"Attempt {attempt+1}: count=0 url={page_url} body={repr(page_text[:150])}", "warn")
 
             if count == 0:
                 await self._log("No comments to delete")
