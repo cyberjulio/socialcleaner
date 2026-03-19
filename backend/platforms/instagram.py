@@ -419,39 +419,59 @@ class InstagramClient(PlatformClient):
 
                 await self._log(f"Clicking Delete at ({delete_pos['x']:.0f}, {delete_pos['y']:.0f})")
                 await page.mouse.click(delete_pos["x"], delete_pos["y"])
-                # Wait for confirmation dialog to appear
-                await page.wait_for_timeout(2000)
 
-                # Step 4: Click confirmation Delete inside the dialog/sheet.
-                # Pass the action bar button's Y so we can exclude it — otherwise
-                # the same button gets re-detected and we click it twice (no-op).
-                action_bar_y = delete_pos["y"]
-                confirm_pos = await page.evaluate(
-                    """(actionBarY) => {
-                        const vh = window.innerHeight;
-                        const els = document.querySelectorAll('button, [role="button"]');
-                        const candidates = [];
-                        for (const el of els) {
-                            const text = (el.innerText || el.textContent || '').trim();
-                            if (text !== 'Delete' && text !== 'Excluir') continue;
-                            if (el.children.length > 2) continue;
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width <= 0 || rect.height <= 0 || rect.height > 80) continue;
-                            const cy = rect.y + rect.height / 2;
-                            // Skip the action bar button we already clicked
-                            if (Math.abs(cy - actionBarY) < 30) continue;
-                            candidates.push({
-                                x: rect.x + rect.width / 2,
-                                y: cy,
-                                distFromCenter: Math.abs(cy - vh / 2),
-                            });
-                        }
-                        if (candidates.length === 0) return null;
-                        candidates.sort((a, b) => a.distFromCenter - b.distFromCenter);
-                        return candidates[0];
-                    }""",
-                    action_bar_y,
-                )
+                # Step 4: Wait for the confirmation dialog/sheet then click its Delete.
+                # We detect dialog presence by waiting for a "Cancel" button —
+                # that only appears inside the confirmation, never in the action bar.
+                confirm_pos = None
+                for _attempt in range(10):  # poll up to ~3s
+                    await page.wait_for_timeout(300)
+                    confirm_pos = await page.evaluate(
+                        """(actionBarY) => {
+                            // Look for a Cancel button as an anchor — it only exists in
+                            // the confirmation dialog, so if it's present the dialog is open.
+                            const allEls = document.querySelectorAll(
+                                'button, [role="button"], div, span'
+                            );
+                            let cancelEl = null;
+                            for (const el of allEls) {
+                                const t = (el.innerText || el.textContent || '').trim();
+                                if (t === 'Cancel' || t === 'Cancelar') {
+                                    const r = el.getBoundingClientRect();
+                                    if (r.width > 0 && r.height > 0 && r.height <= 80) {
+                                        cancelEl = el;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!cancelEl) return null;  // dialog not open yet
+
+                            // Dialog is open — find the Delete button that is NOT
+                            // at the action bar y-position
+                            const vh = window.innerHeight;
+                            const candidates = [];
+                            for (const el of allEls) {
+                                const text = (el.innerText || el.textContent || '').trim();
+                                if (text !== 'Delete' && text !== 'Excluir') continue;
+                                if (el.children.length > 2) continue;
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width <= 0 || rect.height <= 0 || rect.height > 80) continue;
+                                const cy = rect.y + rect.height / 2;
+                                if (Math.abs(cy - actionBarY) < 30) continue;  // skip action bar
+                                candidates.push({
+                                    x: rect.x + rect.width / 2,
+                                    y: cy,
+                                    distFromCenter: Math.abs(cy - vh / 2),
+                                });
+                            }
+                            if (candidates.length === 0) return null;
+                            candidates.sort((a, b) => a.distFromCenter - b.distFromCenter);
+                            return candidates[0];
+                        }""",
+                        delete_pos["y"],
+                    )
+                    if confirm_pos:
+                        break
 
                 if not confirm_pos:
                     await self._log("No confirmation dialog found", "warn")
