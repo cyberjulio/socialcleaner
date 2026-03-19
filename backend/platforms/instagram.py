@@ -478,10 +478,9 @@ class InstagramClient(PlatformClient):
                         return total_deleted > 0
 
                 count_after = await self._count_comments(page)
-                actually_removed = count_before - count_after
 
-                if actually_removed > 0:
-                    batch_deleted = actually_removed
+                if count_after < count_before:
+                    batch_deleted = selected_count if selected_count > 0 else clicked_count
                     total_deleted += batch_deleted
                     self._record_actions(batch_deleted)
                     consecutive_failures = 0
@@ -493,7 +492,7 @@ class InstagramClient(PlatformClient):
                 else:
                     consecutive_failures += 1
                     await self._log(
-                        f"Deletion not verified — count unchanged {count_before} (failure {consecutive_failures}/3)",
+                        f"Deletion not verified — count {count_before}→{count_after} (failure {consecutive_failures}/3)",
                         "error"
                     )
                     if consecutive_failures >= 3:
