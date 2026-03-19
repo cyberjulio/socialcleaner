@@ -419,14 +419,15 @@ class InstagramClient(PlatformClient):
 
                 await self._log(f"Clicking Delete at ({delete_pos['x']:.0f}, {delete_pos['y']:.0f})")
                 await page.mouse.click(delete_pos["x"], delete_pos["y"])
+                # Wait for confirmation dialog to appear
                 await page.wait_for_timeout(2000)
 
                 # Step 4: Click confirmation Delete inside the dialog/sheet.
-                # Instagram may show this as a center modal or a bottom sheet.
-                # Only use interactive elements; don't reject bottom-positioned buttons
-                # since confirmation sheets can appear at the bottom.
-                confirm_pos = await page.evaluate("""
-                    () => {
+                # Pass the action bar button's Y so we can exclude it — otherwise
+                # the same button gets re-detected and we click it twice (no-op).
+                action_bar_y = delete_pos["y"]
+                confirm_pos = await page.evaluate(
+                    """(actionBarY) => {
                         const vh = window.innerHeight;
                         const els = document.querySelectorAll('button, [role="button"]');
                         const candidates = [];
@@ -436,23 +437,21 @@ class InstagramClient(PlatformClient):
                             if (el.children.length > 2) continue;
                             const rect = el.getBoundingClientRect();
                             if (rect.width <= 0 || rect.height <= 0 || rect.height > 80) continue;
+                            const cy = rect.y + rect.height / 2;
+                            // Skip the action bar button we already clicked
+                            if (Math.abs(cy - actionBarY) < 30) continue;
                             candidates.push({
-                                x: rect.x + rect.width/2,
-                                y: rect.y + rect.height/2,
-                                w: rect.width,
-                                h: rect.height,
-                                distFromCenter: Math.abs(rect.y + rect.height/2 - vh/2),
-                                isActionBar: rect.bottom > vh - 80,
+                                x: rect.x + rect.width / 2,
+                                y: cy,
+                                distFromCenter: Math.abs(cy - vh / 2),
                             });
                         }
                         if (candidates.length === 0) return null;
-                        // Prefer dialog buttons (not the action bar one we just clicked)
-                        const dialogCandidates = candidates.filter(c => !c.isActionBar);
-                        const pool = dialogCandidates.length > 0 ? dialogCandidates : candidates;
-                        pool.sort((a, b) => a.distFromCenter - b.distFromCenter);
-                        return pool[0];
-                    }
-                """)
+                        candidates.sort((a, b) => a.distFromCenter - b.distFromCenter);
+                        return candidates[0];
+                    }""",
+                    action_bar_y,
+                )
 
                 if not confirm_pos:
                     await self._log("No confirmation dialog found", "warn")
