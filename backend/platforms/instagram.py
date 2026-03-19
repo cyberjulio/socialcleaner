@@ -135,23 +135,12 @@ class InstagramClient(PlatformClient):
             self._daily_reset = time.time()
 
         if self._daily_actions >= DAILY_CAP:
-            wait_s = 86400 - (time.time() - self._daily_reset)
-            wait_h = max(wait_s, 3600) / 3600
             await self._log(
-                f"Daily cap reached ({DAILY_CAP} actions). Waiting {wait_h:.1f}h until next window.",
+                f"Daily cap reached ({DAILY_CAP} actions). Marking task as completed.",
                 "warn",
             )
-            # Wait in 5-minute increments so cancel can interrupt
-            for i in range(0, int(max(wait_s, 3600)), 300):
-                await self._check_cancelled()
-                remaining_h = (max(wait_s, 3600) - i) / 3600
-                if i % 1800 == 0:
-                    await self._log(f"Daily cap wait: {remaining_h:.1f}h remaining")
-                await asyncio.sleep(300)
-            self._daily_actions = 0
-            self._daily_reset = time.time()
-            self._session_start = time.time()
-            self._session_actions = 0
+            from backend.platforms.base import DailyCapReached
+            raise DailyCapReached(f"Daily cap of {DAILY_CAP} actions reached")
 
         # Session time limit check
         session_elapsed = (time.time() - self._session_start) / 60
@@ -254,14 +243,27 @@ class InstagramClient(PlatformClient):
             await page.close()
 
     async def _count_comments(self, page: Page) -> int:
-        """Count comment entries by looking for timestamp patterns (2w, 3d, 1h, etc.)."""
+        """Count comment entries by looking for timestamp patterns (2w, 3d, 1h, 1mo, 1y, etc.)."""
         return await page.evaluate("""
             () => {
                 const spans = document.querySelectorAll('span');
                 let count = 0;
                 for (const span of spans) {
                     const t = span.textContent?.trim();
-                    if (/^\\d+[smhdw]$/.test(t)) count++;
+                    // Match: 2s, 5m, 3h, 4d, 2w (short), 1mo, 2mo (months), 1y, 2y (years)
+                    if (/^\\d+[smhdw]$/.test(t) || /^\\d+mo$/.test(t) || /^\\d+y$/.test(t)) count++;
+                }
+                // Fallback: if no timestamps matched, check for the Select button as a
+                // proxy indicator that comments exist on the page.
+                if (count === 0) {
+                    const els = document.querySelectorAll('span, button, [role="button"], a');
+                    for (const el of els) {
+                        const text = el.textContent?.trim().toLowerCase();
+                        if (text === 'select' || text === 'selecionar') {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) return 1;
+                        }
+                    }
                 }
                 return count;
             }

@@ -3,6 +3,10 @@ from typing import AsyncIterator
 from playwright.async_api import BrowserContext
 
 
+class DailyCapReached(Exception):
+    """Raised when the platform's daily action cap is hit."""
+
+
 class PlatformClient(ABC):
     def __init__(self, context: BrowserContext, cookies: dict[str, str]):
         self.context = context

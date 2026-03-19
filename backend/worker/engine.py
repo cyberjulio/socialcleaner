@@ -12,7 +12,7 @@ from playwright.async_api import async_playwright, Browser
 
 from backend.config import settings
 from backend.database import get_db
-from backend.platforms.base import PlatformClient
+from backend.platforms.base import PlatformClient, DailyCapReached
 from backend.platforms.instagram import InstagramClient
 from backend.platforms.twitter import TwitterClient
 from backend.platforms.user_agents import USER_AGENTS
@@ -31,10 +31,12 @@ class WorkerEngine:
 
     @staticmethod
     def _cleanup_orphaned_browsers():
-        """Kill any orphaned headless Chromium processes from previous runs."""
+        """Kill orphaned Playwright-launched headless browser processes from previous runs.
+        Only targets browsers spawned from the Playwright cache directory to avoid
+        killing the user's system Firefox or Chromium."""
         try:
             result = subprocess.run(
-                ["pgrep", "-f", "(chromium|firefox).*--headless"],
+                ["pgrep", "-f", "ms-playwright"],
                 capture_output=True, text=True
             )
             pids = result.stdout.strip().split("\n")
@@ -51,7 +53,7 @@ class WorkerEngine:
                     except ProcessLookupError:
                         pass
             if killed:
-                logger.info(f"Cleaned up {killed} orphaned Chromium process(es)")
+                logger.info(f"Cleaned up {killed} orphaned Playwright browser process(es)")
         except Exception as e:
             logger.debug(f"Browser cleanup check: {e}")
 
@@ -361,6 +363,14 @@ class WorkerEngine:
 
         except asyncio.CancelledError:
             logger.info(f"Task {task_id} cancelled")
+        except DailyCapReached:
+            logger.info(f"Task {task_id} hit daily cap — marking completed")
+            await db.execute(
+                "UPDATE tasks SET status = 'completed', updated_at = datetime('now') WHERE id = ?",
+                (task_id,),
+            )
+            await db.commit()
+            await event_bus.publish(task_id, "task_status", {"status": "completed"})
         except Exception as e:
             logger.error(f"Task {task_id} failed: {e}", exc_info=True)
             await db.execute(
