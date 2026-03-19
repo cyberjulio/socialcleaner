@@ -9,16 +9,21 @@ Instagram's web interface the same way you would manually, just faster.
 
 ## How it works
 
-1. You connect your Instagram account by providing session cookies from
-   your browser (via a bookmarklet or manual paste).
+SocialCleaner can be used via the **CLI** (terminal menu) or the **Web Dashboard**.
+
+1. You connect your Instagram account — either by logging in through a
+   browser window (CLI) or by providing session cookies (Web).
 2. SocialCleaner opens a headless browser with your session and navigates to
    **Your Activity > Likes** or **Your Activity > Comments**.
 3. It selects items in small batches, clicks Unlike/Delete, confirms, and
    verifies each removal before moving on.
-4. Progress is streamed to the dashboard in real time via server-sent events.
+4. Progress is shown live — in a terminal progress bar (CLI) or streamed
+   to the web dashboard via server-sent events.
 
 Your cookies are encrypted at rest with Fernet (AES-128-CBC) and stored in a
-local SQLite database. Nothing is sent to any external server.
+local SQLite database. Nothing is sent to any external server. Both the CLI
+and web dashboard share the same database — accounts and tasks are visible
+in either interface.
 
 ## Requirements
 
@@ -91,29 +96,59 @@ cp .env.example .env
 
 ## Running
 
-Start both servers with a single command:
+### Option A: CLI (recommended)
+
+The CLI provides a menu-driven interface with no browser needed for setup:
+
+```bash
+source venv/bin/activate
+python -m cli
+```
+
+This launches an interactive menu:
+
+```
+  1. Start Web Dashboard
+  2. Unlike Instagram Posts
+  3. Delete Instagram Comments
+  4. Manage Accounts
+  5. About
+  6. Quit
+```
+
+Press a number to navigate — no Enter key needed.
+
+### Option B: Web Dashboard
+
+You can also launch the web dashboard from the CLI (option 1), or start it
+directly:
+
+```bash
+source venv/bin/activate
+uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+Open http://127.0.0.1:8000 in your browser.
+
+### Development mode
+
+For development (with hot reload on both servers):
 
 ```bash
 ./scripts/dev.sh
 ```
 
-Press Ctrl+C to stop both servers.
-
-Open http://127.0.0.1:5173 in your browser.
-
-If you prefer to run them separately (e.g. for debugging), use two terminals:
-
-```bash
-# Terminal 1 -- Backend
-source venv/bin/activate
-uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
-
-# Terminal 2 -- Frontend
-cd frontend
-npm run dev
-```
-
 ## Connecting your Instagram account
+
+### Via CLI (recommended)
+
+1. Launch the CLI: `python -m cli`
+2. Press **4** (Manage Accounts) then **1** (Add Instagram Account)
+3. A Firefox browser window opens to the Instagram login page
+4. Log in normally — handle 2FA if prompted
+5. The CLI detects when you're logged in and saves your session
+
+### Via Web Dashboard
 
 1. Click **+ Connect Account** on the dashboard.
 2. Choose **Instagram**.
@@ -126,7 +161,19 @@ npm run dev
      `ig_did`, `mid`).
 4. Once connected, your account appears on the dashboard with action buttons.
 
+Accounts are shared between CLI and web — add once, use in either.
+
 ## Usage
+
+### CLI
+
+- **Unlike Instagram Posts** (option 2) — removes all your likes
+- **Delete Instagram Comments** (option 3) — removes all your comments
+- Live progress bar shows count, speed, and estimated time
+- Press **Q** to stop (progress is saved), **P** to pause/resume
+- If you stop mid-task, the CLI will offer to resume next time
+
+### Web Dashboard
 
 - **Unlike All** -- removes all your likes, newest first.
 - **Delete Comments** -- removes all your comments.
@@ -140,6 +187,12 @@ later; the backend continues processing.
 
 ```
 socialcleaner/
+  cli/
+    __main__.py        CLI entry point (python -m cli)
+    app.py             Main menu loop and signal handling
+    auth.py            Interactive browser login and account management
+    tasks.py           Task execution with rich progress display
+    display.py         Shared rich TUI components
   backend/
     main.py            FastAPI application entry point
     config.py          Settings (secret key, DB path)
@@ -154,7 +207,7 @@ socialcleaner/
       crypto.py        Fernet encryption for cookie storage
       events.py        Server-sent event bus
     worker/
-      engine.py        Task execution engine
+      engine.py        Task execution engine (with TaskEventSink protocol)
       rate_limiter.py  Adaptive rate limiting
   frontend/
     src/

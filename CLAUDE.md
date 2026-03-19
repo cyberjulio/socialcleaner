@@ -5,6 +5,7 @@ Self-hosted tool for bulk-removing likes and comments from Instagram (Twitter/X 
 
 ## Tech Stack
 - **Backend**: FastAPI + Uvicorn + aiosqlite (SQLite, WAL mode) + Playwright + sse-starlette
+- **CLI**: rich (TUI) + Playwright (interactive browser login)
 - **Frontend**: React 19 + Vite 6 + Tailwind CSS 4
 - **DB**: SQLite (`cleaner.db`)
 - **Encryption**: Fernet via `cryptography` package
@@ -13,18 +14,27 @@ Self-hosted tool for bulk-removing likes and comments from Instagram (Twitter/X 
 ## Running the Project
 
 ```bash
-# Development (both servers at once)
+# CLI (recommended for users)
+source venv/bin/activate && python -m cli
+
+# Web dashboard only
+source venv/bin/activate && uvicorn backend.main:app --host 127.0.0.1 --port 8000
+
+# Development (both servers with hot reload)
 ./scripts/dev.sh
 # Backend:  http://127.0.0.1:8000
 # Frontend: http://127.0.0.1:5173
-
-# Or separately:
-source venv/bin/activate && uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
-cd frontend && npm run dev
 ```
 
 ## Key Structure
 ```
+cli/
+  __main__.py      # Entry point (python -m cli)
+  app.py           # Main menu loop + rich console setup
+  auth.py          # Interactive browser login + account management
+  tasks.py         # Task execution + rich progress display
+  display.py       # Shared rich components (menus, panels, keypress)
+
 backend/
   main.py          # FastAPI app entry point (lifespan management)
   config.py        # Settings (secret key, host, port, db path)
@@ -42,7 +52,7 @@ backend/
     crypto.py      # Fernet encrypt/decrypt
     events.py      # EventBus for SSE per task_id
   worker/
-    engine.py      # Task executor, browser lifecycle
+    engine.py      # Task executor, browser lifecycle, TaskEventSink protocol
     rate_limiter.py# Human-like tiered delays + Gaussian jitter
 
 frontend/src/
@@ -56,8 +66,11 @@ frontend/src/
 
 ## Architecture Notes
 - **Async-first**: All I/O uses async/await (aiosqlite, Playwright async APIs)
-- **SSE streaming**: Real-time progress via EventBus → `/api/tasks/{id}/stream`
+- **TaskEventSink protocol**: Engine uses injectable event sink — `EventBus` for web (SSE), `CLIEventSink` for CLI (rich TUI). Decouples task execution from transport.
+- **SSE streaming**: Web real-time progress via EventBus → `/api/tasks/{id}/stream`
+- **CLI progress**: rich `Live` display updated via `CLIEventSink` callbacks
 - **Browser matching**: Uses Firefox for Firefox UAs, Chromium otherwise (avoids bot detection)
+- **CLI UA**: Sessions created via CLI use a generic Firefox UA; web sessions reuse the captured UA from the portal
 - **Rate limiting tiers**: warm-up (8-15s) → cruising (4-10s) → scroll breaks (2-5min every 30-60 actions) → session breaks (15-45min every 150-200 actions); daily caps: 800 (Instagram), 350 (Twitter)
 - **Daily cap behaviour**: When daily cap is hit, `DailyCapReached` is raised (in `base.py`) and the engine marks the task `completed` immediately — no waiting
 - **Session resumption**: Tasks in `running`/`scanning` state at startup are reset to `pending` and re-queued

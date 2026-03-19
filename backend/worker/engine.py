@@ -7,6 +7,7 @@ import signal
 import subprocess
 import uuid
 from datetime import datetime
+from typing import Protocol
 
 from playwright.async_api import async_playwright, Browser
 
@@ -23,11 +24,17 @@ from backend.worker.rate_limiter import RateLimiter
 logger = logging.getLogger(__name__)
 
 
+class TaskEventSink(Protocol):
+    """Protocol for receiving task events. EventBus and CLI sink both satisfy this."""
+    async def publish(self, task_id: str, event_type: str, data: dict) -> None: ...
+
+
 class WorkerEngine:
-    def __init__(self):
+    def __init__(self, sink: TaskEventSink | None = None):
         self._browser: Browser | None = None
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._pw = None
+        self._sink: TaskEventSink = sink or event_bus
 
     @staticmethod
     def _cleanup_orphaned_browsers():
@@ -173,7 +180,7 @@ class WorkerEngine:
 
             # Wire up live logging to SSE
             async def log_to_frontend(message, level="info"):
-                await event_bus.publish(task_id, "log", {"message": message, "level": level})
+                await self._sink.publish(task_id, "log", {"message": message, "level": level})
             client.set_log_callback(log_to_frontend)
 
             # Wire up batch progress reporting
@@ -191,14 +198,14 @@ class WorkerEngine:
                             (deleted, task_id),
                         )
                     await progress_db.commit()
-                    await event_bus.publish(task_id, "batch_progress", {"deleted": deleted, "total": total})
+                    await self._sink.publish(task_id, "batch_progress", {"deleted": deleted, "total": total})
                 finally:
                     await progress_db.close()
             client.set_progress_callback(report_progress)
 
             # Wire up generic event emitter for custom SSE events (e.g. ETA)
             async def emit_event(event_type, data):
-                await event_bus.publish(task_id, event_type, data)
+                await self._sink.publish(task_id, event_type, data)
             client.set_event_callback(emit_event)
 
             rate_limiter = RateLimiter(task["platform"])
@@ -213,10 +220,10 @@ class WorkerEngine:
                     (task_id,),
                 )
                 await db.commit()
-                await event_bus.publish(task_id, "task_status", {"status": "scanning"})
+                await self._sink.publish(task_id, "task_status", {"status": "scanning"})
 
                 count = 0
-                await event_bus.publish(task_id, "log", {"message": f"Starting scan for {task['target_type']} on {task['platform']}..."})
+                await self._sink.publish(task_id, "log", {"message": f"Starting scan for {task['target_type']} on {task['platform']}..."})
                 try:
                     async for item_data in client.fetch_items(task["target_type"]):
                         # Check for cancellation during scan
@@ -224,7 +231,7 @@ class WorkerEngine:
                             "SELECT status FROM tasks WHERE id = ?", (task_id,)
                         )
                         if current and current[0]["status"] in ("paused", "cancelled"):
-                            await event_bus.publish(task_id, "log", {"message": f"Task {current[0]['status']} during scan"})
+                            await self._sink.publish(task_id, "log", {"message": f"Task {current[0]['status']} during scan"})
                             if hasattr(client, 'cancel'):
                                 client.cancel()
                             break
@@ -235,27 +242,27 @@ class WorkerEngine:
                             (item_id, task_id, item_data["platform_id"], item_data["item_type"], item_data.get("metadata")),
                         )
                         count += 1
-                        await event_bus.publish(task_id, "log", {"message": f"Found item #{count}: {item_data['platform_id']}"})
+                        await self._sink.publish(task_id, "log", {"message": f"Found item #{count}: {item_data['platform_id']}"})
                         if count % 20 == 0:
                             await db.commit()
-                            await event_bus.publish(task_id, "scan_progress", {"found": count})
+                            await self._sink.publish(task_id, "scan_progress", {"found": count})
 
                         # Small delay between pagination requests
                         await asyncio.sleep(random.uniform(1, 3))
                 except asyncio.CancelledError:
-                    await event_bus.publish(task_id, "log", {"message": "Task cancelled"})
+                    await self._sink.publish(task_id, "log", {"message": "Task cancelled"})
                 except Exception as scan_err:
                     logger.error(f"Scan error: {scan_err}", exc_info=True)
-                    await event_bus.publish(task_id, "log", {"message": f"SCAN ERROR: {scan_err}", "level": "error"})
+                    await self._sink.publish(task_id, "log", {"message": f"SCAN ERROR: {scan_err}", "level": "error"})
 
-                await event_bus.publish(task_id, "log", {"message": f"Scan complete. Found {count} items."})
+                await self._sink.publish(task_id, "log", {"message": f"Scan complete. Found {count} items."})
 
                 await db.execute(
                     "UPDATE tasks SET total_items = ?, updated_at = datetime('now') WHERE id = ?",
                     (count, task_id),
                 )
                 await db.commit()
-                await event_bus.publish(task_id, "scan_complete", {"total": count})
+                await self._sink.publish(task_id, "scan_complete", {"total": count})
 
             # Phase 2: Delete items
             await db.execute(
@@ -263,7 +270,7 @@ class WorkerEngine:
                 (task_id,),
             )
             await db.commit()
-            await event_bus.publish(task_id, "task_status", {"status": "running"})
+            await self._sink.publish(task_id, "task_status", {"status": "running"})
 
             while True:
                 # Check if task is paused or cancelled
@@ -295,7 +302,7 @@ class WorkerEngine:
                             "UPDATE tasks SET deleted = deleted + 1, updated_at = datetime('now') WHERE id = ?",
                             (task_id,),
                         )
-                        await event_bus.publish(task_id, "item_deleted", {
+                        await self._sink.publish(task_id, "item_deleted", {
                             "item_id": item["id"],
                             "platform_id": item["platform_id"],
                         })
@@ -310,7 +317,7 @@ class WorkerEngine:
                                 "UPDATE tasks SET failed = failed + 1, updated_at = datetime('now') WHERE id = ?",
                                 (task_id,),
                             )
-                            await event_bus.publish(task_id, "item_failed", {
+                            await self._sink.publish(task_id, "item_failed", {
                                 "item_id": item["id"],
                                 "reason": "max retries",
                             })
@@ -326,10 +333,10 @@ class WorkerEngine:
 
                     if "429" in error_msg or "rate" in error_msg.lower():
                         rate_limiter.on_rate_limit()
-                        await event_bus.publish(task_id, "rate_limited", {"message": "Rate limited, backing off"})
+                        await self._sink.publish(task_id, "rate_limited", {"message": "Rate limited, backing off"})
                     elif "checkpoint" in error_msg.lower():
                         rate_limiter.on_checkpoint_required()
-                        await event_bus.publish(task_id, "checkpoint_required", {
+                        await self._sink.publish(task_id, "checkpoint_required", {
                             "message": "Platform requires verification. Please verify in your app."
                         })
                     else:
@@ -358,7 +365,7 @@ class WorkerEngine:
                 (task_id,),
             )
             await db.commit()
-            await event_bus.publish(task_id, "task_status", {"status": "completed"})
+            await self._sink.publish(task_id, "task_status", {"status": "completed"})
             logger.info(f"Task {task_id} completed")
 
         except asyncio.CancelledError:
@@ -370,7 +377,7 @@ class WorkerEngine:
                 (task_id,),
             )
             await db.commit()
-            await event_bus.publish(task_id, "task_status", {"status": "completed"})
+            await self._sink.publish(task_id, "task_status", {"status": "completed"})
         except Exception as e:
             logger.error(f"Task {task_id} failed: {e}", exc_info=True)
             await db.execute(
@@ -378,7 +385,7 @@ class WorkerEngine:
                 (task_id,),
             )
             await db.commit()
-            await event_bus.publish(task_id, "task_status", {"status": "failed", "error": str(e)})
+            await self._sink.publish(task_id, "task_status", {"status": "failed", "error": str(e)})
         finally:
             if client:
                 await client.close()
