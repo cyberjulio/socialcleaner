@@ -332,6 +332,9 @@ class InstagramClient(PlatformClient):
                 batch_size = random.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
                 await self._log(f"Batch: removing up to {batch_size} comment(s)... [daily: {self._daily_actions}/{DAILY_CAP}]")
 
+                # Capture fingerprints BEFORE entering selection mode (normal DOM state)
+                fp_before = await self._get_comment_fingerprints(page)
+
                 # Step 1: Click Select
                 select_pos = await page.evaluate("""
                     () => {
@@ -354,9 +357,6 @@ class InstagramClient(PlatformClient):
 
                 await page.mouse.click(select_pos["x"], select_pos["y"])
                 await page.wait_for_timeout(1500)
-
-                # Capture fingerprints of visible comments before selection
-                fp_before = await self._get_comment_fingerprints(page)
 
                 # Step 2: Click checkboxes using Playwright locators with force=True
                 # (bypasses the overlapping "Image with button" element).
@@ -388,64 +388,69 @@ class InstagramClient(PlatformClient):
                 # Optional reading pause before action
                 await self._reading_pause()
 
-                # Step 3: Click Delete (bottom bar)
+                # Step 3: Click Delete in the bottom action bar.
+                # Only target interactive elements and use innerText to avoid
+                # matching parent wrappers via textContent.
                 delete_pos = await page.evaluate("""
                     () => {
-                        const els = document.querySelectorAll('span, div, button');
+                        const vh = window.innerHeight;
+                        const els = document.querySelectorAll('button, [role="button"]');
+                        const candidates = [];
                         for (const el of els) {
-                            const text = el.textContent?.trim();
-                            const tag = el.tagName.toLowerCase();
-                            if (tag === 'title') continue;
-                            if (text === 'Delete' || text === 'Excluir') {
-                                const rect = el.getBoundingClientRect();
-                                if (rect.width > 0 && rect.height > 0) {
-                                    return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
-                                }
-                            }
+                            const text = (el.innerText || el.textContent || '').trim();
+                            if (text !== 'Delete' && text !== 'Excluir') continue;
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width <= 0 || rect.height <= 0) continue;
+                            candidates.push({
+                                x: rect.x + rect.width/2,
+                                y: rect.y + rect.height/2,
+                                bottomDist: Math.abs(rect.bottom - vh),
+                            });
                         }
-                        return null;
+                        if (candidates.length === 0) return null;
+                        // Prefer the element closest to the bottom (action bar position)
+                        candidates.sort((a, b) => a.bottomDist - b.bottomDist);
+                        return candidates[0];
                     }
                 """)
                 if not delete_pos:
-                    await self._log("Could not find Delete button", "error")
+                    await self._log("Could not find Delete button in action bar", "error")
                     break
 
+                await self._log(f"Clicking Delete at ({delete_pos['x']:.0f}, {delete_pos['y']:.0f})")
                 await page.mouse.click(delete_pos["x"], delete_pos["y"])
                 await page.wait_for_timeout(2000)
 
-                # Step 4: Click confirmation Delete INSIDE the dialog
-                # Instagram doesn't use [role="dialog"]. Instead, find the Delete
-                # button that's NOT the bottom-bar one (the confirmation appears as
-                # an overlay, typically in the center of the viewport).
+                # Step 4: Click confirmation Delete inside the dialog/sheet.
+                # Instagram may show this as a center modal or a bottom sheet.
+                # Only use interactive elements; don't reject bottom-positioned buttons
+                # since confirmation sheets can appear at the bottom.
                 confirm_pos = await page.evaluate("""
                     () => {
                         const vh = window.innerHeight;
-                        const vw = window.innerWidth;
+                        const els = document.querySelectorAll('button, [role="button"]');
                         const candidates = [];
-                        const els = document.querySelectorAll('button, [role="button"], span, a, div');
                         for (const el of els) {
-                            const text = el.textContent?.trim();
+                            const text = (el.innerText || el.textContent || '').trim();
                             if (text !== 'Delete' && text !== 'Excluir') continue;
                             if (el.children.length > 2) continue;
                             const rect = el.getBoundingClientRect();
                             if (rect.width <= 0 || rect.height <= 0 || rect.height > 80) continue;
-                            // Dialog buttons appear in the center portion of the screen
-                            // Bottom bar is at the very bottom (y > vh - 80)
                             candidates.push({
                                 x: rect.x + rect.width/2,
                                 y: rect.y + rect.height/2,
                                 w: rect.width,
                                 h: rect.height,
-                                distFromCenter: Math.abs(rect.y + rect.height/2 - vh/2)
+                                distFromCenter: Math.abs(rect.y + rect.height/2 - vh/2),
+                                isActionBar: rect.bottom > vh - 80,
                             });
                         }
                         if (candidates.length === 0) return null;
-                        // If multiple Delete buttons, pick the one closest to viewport center
-                        // (the dialog one), NOT the bottom bar one
-                        candidates.sort((a, b) => a.distFromCenter - b.distFromCenter);
-                        // Safety: if there's only one and it's at the bottom, it's the bar button
-                        if (candidates.length === 1 && candidates[0].y > vh - 100) return null;
-                        return candidates[0];
+                        // Prefer dialog buttons (not the action bar one we just clicked)
+                        const dialogCandidates = candidates.filter(c => !c.isActionBar);
+                        const pool = dialogCandidates.length > 0 ? dialogCandidates : candidates;
+                        pool.sort((a, b) => a.distFromCenter - b.distFromCenter);
+                        return pool[0];
                     }
                 """)
 
