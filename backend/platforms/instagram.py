@@ -420,60 +420,38 @@ class InstagramClient(PlatformClient):
                 await self._log(f"Clicking Delete at ({delete_pos['x']:.0f}, {delete_pos['y']:.0f})")
                 await page.mouse.click(delete_pos["x"], delete_pos["y"])
 
-                # Step 4: Wait for the confirmation dialog then click its Delete via
-                # el.click() (JS dispatch) — bypasses overlay interception that
-                # breaks page.mouse.click on React SPAs.
-                # We anchor on "Cancel" appearing — it only exists in the dialog.
+                # Step 4: Wait for the confirmation dialog then click its Delete.
+                # Use Playwright's native .click(force=True) — dispatches a real CDP
+                # mouse event (isTrusted=true), unlike el.click() or mouse.click().
+                # Anchor on "Cancel" appearing — it only exists in the dialog.
                 confirmed = False
+                action_bar_y = delete_pos["y"]
                 for _attempt in range(10):  # poll up to ~3s
                     await page.wait_for_timeout(300)
-                    result = await page.evaluate(
-                        """(actionBarY) => {
-                            const allEls = document.querySelectorAll(
-                                'button, [role="button"], div, span'
-                            );
-                            // Confirm dialog is open when Cancel is visible
-                            let dialogOpen = false;
-                            for (const el of allEls) {
-                                const t = (el.innerText || el.textContent || '').trim();
-                                if (t === 'Cancel' || t === 'Cancelar') {
-                                    const r = el.getBoundingClientRect();
-                                    if (r.width > 0 && r.height > 0 && r.height <= 80) {
-                                        dialogOpen = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!dialogOpen) return null;
-
-                            // Dialog is open — find and JS-click the Delete button
-                            // that is NOT the action bar button (different y)
-                            const candidates = [];
-                            for (const el of allEls) {
-                                const text = (el.innerText || el.textContent || '').trim();
-                                if (text !== 'Delete' && text !== 'Excluir') continue;
-                                if (el.children.length > 2) continue;
-                                const rect = el.getBoundingClientRect();
-                                if (rect.width <= 0 || rect.height <= 0 || rect.height > 80) continue;
-                                const cy = rect.y + rect.height / 2;
-                                if (Math.abs(cy - actionBarY) < 30) continue;
-                                candidates.push({el, cx: rect.x + rect.width/2, cy});
-                            }
-                            if (candidates.length === 0) return null;
-                            // Pick closest to viewport center
-                            const vh = window.innerHeight;
-                            candidates.sort((a, b) =>
-                                Math.abs(a.cy - vh/2) - Math.abs(b.cy - vh/2)
-                            );
-                            const best = candidates[0];
-                            best.el.click();
-                            return {x: best.cx, y: best.cy};
-                        }""",
-                        delete_pos["y"],
-                    )
-                    if result:
-                        await self._log(f"Clicking confirm at ({result['x']:.0f}, {result['y']:.0f})")
-                        confirmed = True
+                    # Check if Cancel is visible (dialog is open)
+                    cancel_count = await page.get_by_text("Cancel", exact=True).count()
+                    cancel_count += await page.get_by_text("Cancelar", exact=True).count()
+                    if cancel_count == 0:
+                        continue
+                    # Dialog open — find Delete buttons not at the action bar Y
+                    for label in ["Delete", "Excluir"]:
+                        candidates = page.get_by_text(label, exact=True)
+                        n = await candidates.count()
+                        for i in range(n):
+                            el = candidates.nth(i)
+                            box = await el.bounding_box()
+                            if not box:
+                                continue
+                            cy = box["y"] + box["height"] / 2
+                            if abs(cy - action_bar_y) < 30:
+                                continue  # skip action bar button
+                            await self._log(f"Clicking confirm at ({box['x']+box['width']/2:.0f}, {cy:.0f})")
+                            await el.click(force=True)
+                            confirmed = True
+                            break
+                        if confirmed:
+                            break
+                    if confirmed:
                         break
 
                 if not confirmed:
