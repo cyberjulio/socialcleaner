@@ -73,7 +73,7 @@ frontend/src/
 - **Browser login**: Both CLI and web offer interactive browser login — launches visible Firefox, user logs in normally, cookies captured automatically. Web also has console snippet and manual paste as fallbacks.
 - **CLI UA**: Sessions created via CLI or browser login use a generic Firefox UA; cookie-based web sessions reuse the captured UA from the portal
 - **Rate limiting tiers**: warm-up (8-15s) → cruising (4-10s) → scroll breaks (2-5min every 30-60 actions) → session breaks (15-45min every 150-200 actions); daily caps: 800 (Instagram), 350 (Twitter)
-- **Daily cap behaviour**: When daily cap is hit, `DailyCapReached` is raised (in `base.py`) and the engine marks the task `completed` immediately — no waiting
+- **Daily cap behaviour**: When daily cap is hit, `DailyCapReached` is raised (in `base.py`) and the engine marks the task `completed` immediately — no waiting. Daily action counts are persisted in the `daily_actions` table (keyed by session_id + date), so the cap is shared across CLI and Web for the same account.
 - **Session resumption**: Tasks in `running`/`scanning` state at startup are reset to `pending` and re-queued
 - **Orphaned process cleanup**: Engine kills stray browser processes from crashed runs
 
@@ -99,6 +99,7 @@ Batch deletion on `/your_activity/interactions/comments` is tricky; key lessons 
 | `tasks` | Cleaning jobs (platform, target_type, status, counts) |
 | `items` | Individual likes/comments (platform_id, status, attempts, errors) |
 | `events` | Persisted SSE event logs for task history |
+| `daily_actions` | Per-session daily action count (shared across CLI/Web) |
 
 ## Environment Variables (`.env`)
 ```

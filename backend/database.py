@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS events (
     payload    TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS daily_actions (
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    action_date TEXT NOT NULL,
+    action_count INTEGER DEFAULT 0,
+    PRIMARY KEY (session_id, action_date)
+);
 """
 
 

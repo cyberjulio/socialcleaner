@@ -31,16 +31,17 @@ ACTION_BLOCK_COOLDOWN_H = 24  # hours to pause on action block
 
 
 class InstagramClient(PlatformClient):
-    def __init__(self, context: BrowserContext, cookies: dict[str, str]):
+    def __init__(self, context: BrowserContext, cookies: dict[str, str], session_id: str | None = None):
         super().__init__(context, cookies)
         self.csrf_token = cookies.get("csrftoken", "")
         self.user_id = cookies.get("ds_user_id", "")
         self._cancelled = False
+        self._session_id = session_id
         # Rate limiting state
         self._session_start = time.time()
         self._session_actions = 0
         self._daily_actions = 0
-        self._daily_reset = time.time()
+        self._daily_actions_loaded = False
 
     def cancel(self):
         self._cancelled = True
@@ -125,14 +126,50 @@ class InstagramClient(PlatformClient):
         delay = random.uniform(INTER_BATCH_DELAY_MIN, INTER_BATCH_DELAY_MAX)
         await asyncio.sleep(delay)
 
+    async def _load_daily_actions(self):
+        """Load today's action count from the database (shared across CLI and Web)."""
+        if not self._session_id:
+            return
+        from backend.database import get_db
+        from datetime import date
+        db = await get_db()
+        try:
+            today = date.today().isoformat()
+            row = await db.execute_fetchall(
+                "SELECT action_count FROM daily_actions WHERE session_id = ? AND action_date = ?",
+                (self._session_id, today),
+            )
+            self._daily_actions = row[0]["action_count"] if row else 0
+        finally:
+            await db.close()
+        self._daily_actions_loaded = True
+
+    async def _persist_daily_actions(self, count: int):
+        """Persist action count increment to the database."""
+        if not self._session_id:
+            return
+        from backend.database import get_db
+        from datetime import date
+        db = await get_db()
+        try:
+            today = date.today().isoformat()
+            await db.execute(
+                "INSERT INTO daily_actions (session_id, action_date, action_count) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(session_id, action_date) DO UPDATE SET action_count = action_count + ?",
+                (self._session_id, today, count, count),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
     async def _check_session_limits(self):
         """Enforce session time limits and daily cap. Returns False if daily cap hit and reset waited."""
         await self._check_cancelled()
 
-        # Daily cap check
-        if time.time() - self._daily_reset > 86400:
-            self._daily_actions = 0
-            self._daily_reset = time.time()
+        # Load today's count from DB on first check (picks up actions from other sessions)
+        if not self._daily_actions_loaded:
+            await self._load_daily_actions()
 
         if self._daily_actions >= DAILY_CAP:
             await self._log(
@@ -162,10 +199,11 @@ class InstagramClient(PlatformClient):
             self._session_actions = 0
             await self._log("Session rest complete. Resuming...")
 
-    def _record_actions(self, count: int):
-        """Record that `count` actions were performed."""
+    async def _record_actions(self, count: int):
+        """Record that `count` actions were performed (in-memory + database)."""
         self._session_actions += count
         self._daily_actions += count
+        await self._persist_daily_actions(count)
 
     async def _new_page(self) -> Page:
         """Create a new page with IG session loaded."""
@@ -483,7 +521,7 @@ class InstagramClient(PlatformClient):
                 # comments on reload, causing the count to go UP even after deleting.
                 batch_deleted = selected_count if selected_count > 0 else clicked_count
                 total_deleted += batch_deleted
-                self._record_actions(batch_deleted)
+                await self._record_actions(batch_deleted)
                 consecutive_failures = 0
                 await self._report_progress(deleted=total_deleted)
                 await self._log(f"Batch done: {batch_deleted} deleted. Total: {total_deleted}")
@@ -1010,7 +1048,7 @@ class InstagramClient(PlatformClient):
 
                 if removed:
                     total_unliked += actual_batch
-                    self._record_actions(actual_batch)
+                    await self._record_actions(actual_batch)
                     consecutive_failures = 0
                     await self._report_progress(deleted=total_unliked)
                     await self._log(f"Verified: {len(removed)} like(s) removed. Total: {total_unliked}")

@@ -145,8 +145,9 @@ class WorkerEngine:
         await context.add_cookies(browser_cookies)
         logger.info(f"Injected {len(browser_cookies)} cookies for domain {domain}")
 
+        session_id = session_row["id"]
         if platform == "instagram":
-            return InstagramClient(context, cookies_dict), task_browser
+            return InstagramClient(context, cookies_dict, session_id=session_id), task_browser
         elif platform == "twitter":
             return TwitterClient(context, cookies_dict), task_browser
         else:
