@@ -124,7 +124,7 @@ Press a number to navigate — no Enter key needed.
 
 ### Option B: Web Dashboard
 
-You can also launch the web dashboard from the CLI (option 1), or start it
+You can also launch the web dashboard from the CLI (option 4), or start it
 directly:
 
 ```bash
@@ -147,7 +147,7 @@ For development (with hot reload on both servers):
 ### Via CLI (recommended)
 
 1. Launch the CLI: `python -m cli`
-2. Press **4** (Manage Accounts) then **1** (Add Instagram Account)
+2. Press **3** (Manage Accounts) then **1** (Add Instagram Account)
 3. A Firefox browser window opens to the Instagram login page
 4. Log in normally — handle 2FA if prompted
 5. The CLI detects when you're logged in and saves your session
@@ -172,8 +172,8 @@ Accounts are shared between CLI and web — add once, use in either.
 
 ### CLI
 
-- **Unlike Instagram Posts** (option 2) — removes all your likes
-- **Delete Instagram Comments** (option 3) — removes all your comments
+- **Unlike Instagram Posts** (option 1) — removes all your likes
+- **Delete Instagram Comments** (option 2) — removes all your comments
 - Live progress bar shows count, speed, and estimated time
 - Press **Q** to stop (progress is saved), **P** to pause/resume
 - If you stop mid-task, the CLI will offer to resume next time
