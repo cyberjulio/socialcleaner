@@ -110,10 +110,10 @@ python -m cli
 This launches an interactive menu:
 
 ```
-  1. Start Web Dashboard
-  2. Unlike Instagram Posts
-  3. Delete Instagram Comments
-  4. Manage Accounts
+  1. [CLI] Unlike Instagram Posts
+  2. [CLI] Delete Instagram Comments
+  3. [CLI + WEB] Manage Accounts
+  4. [WEB] Start Web Dashboard
   5. About
   6. Quit
 ```

@@ -26,29 +26,29 @@ async def main():
             key = show_menu(
                 "SocialCleaner",
                 [
-                    "Start Web Dashboard",
-                    "Unlike Instagram Posts",
-                    "Delete Instagram Comments",
-                    "Manage Accounts",
+                    "[CLI] Unlike Instagram Posts",
+                    "[CLI] Delete Instagram Comments",
+                    "[CLI + WEB] Manage Accounts",
+                    "[WEB] Start Web Dashboard",
                     "About",
                     "Quit",
                 ],
             )
 
             if key == "1":
-                await start_web_dashboard()
-            elif key == "2":
                 from cli.tasks import run_task_flow
 
                 await run_task_flow("likes")
-            elif key == "3":
+            elif key == "2":
                 from cli.tasks import run_task_flow
 
                 await run_task_flow("comments")
-            elif key == "4":
+            elif key == "3":
                 from cli.auth import manage_accounts
 
                 await manage_accounts()
+            elif key == "4":
+                await start_web_dashboard()
             elif key == "5":
                 show_about()
             elif key == "6":
