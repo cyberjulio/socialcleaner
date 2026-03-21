@@ -1,4 +1,6 @@
-# SocialCleaner
+<p align="center">
+  <img src="assets/logo.jpg" alt="SocialCleaner" width="600">
+</p>
 
 A self-hosted tool for bulk-removing your likes and comments from Instagram
 (and eventually Twitter/X). It runs entirely on your machine -- your
