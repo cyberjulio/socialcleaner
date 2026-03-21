@@ -66,7 +66,7 @@ frontend/src/
 
 ## Architecture Notes
 - **Async-first**: All I/O uses async/await (aiosqlite, Playwright async APIs)
-- **TaskEventSink protocol**: Engine uses injectable event sink — `EventBus` for web (SSE), `CLIEventSink` for CLI (rich TUI). Decouples task execution from transport.
+- **TaskEventSink protocol**: Engine uses injectable event sink — `EventBus` for web (SSE), `CLIEventSink` for CLI (rich TUI). Both sinks persist log events to the `events` table so CLI task logs are visible on the web dashboard.
 - **SSE streaming**: Web real-time progress via EventBus → `/api/tasks/{id}/stream`
 - **CLI progress**: rich `Live` display updated via `CLIEventSink` callbacks
 - **Browser matching**: Uses Firefox for Firefox UAs, Chromium otherwise (avoids bot detection)
