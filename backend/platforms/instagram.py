@@ -228,7 +228,7 @@ class InstagramClient(PlatformClient):
             for attempt in range(3):
                 await page.wait_for_timeout(3000)
                 if "/accounts/login" in page.url:
-                    await self._log("Redirected to login — session invalid", "error")
+                    await self._log("Redirected to login — session may have expired, reconnect your account", "error")
                     return
                 count = await self._count_comments(page)
                 if count > 0:
@@ -289,7 +289,7 @@ class InstagramClient(PlatformClient):
         await page.wait_for_timeout(3000)
 
         if "/accounts/login" in page.url:
-            await self._log("Redirected to login", "error")
+            await self._log("Redirected to login — session may have expired, reconnect your account", "error")
             return False
 
         # Check for error state
@@ -317,14 +317,21 @@ class InstagramClient(PlatformClient):
         """
         total_deleted = 0
         consecutive_failures = 0
-        page = await self.context.new_page()
+        page = await self._new_page()
 
         try:
             await self._log("Opening Your Activity > Comments...")
             if not await self._navigate_to_comments(page):
                 return False
 
-            count_initial = await self._count_comments(page)
+            # Retry count up to 3x (3s each) — SPA needs 6-9s to render comments
+            count_initial = 0
+            for attempt in range(3):
+                count_initial = await self._count_comments(page)
+                if count_initial > 0:
+                    break
+                await self._log(f"Waiting for comments to render (attempt {attempt+1}/3)...")
+                await page.wait_for_timeout(3000)
 
             if count_initial == 0:
                 await self._log("No comments to delete")
@@ -338,9 +345,6 @@ class InstagramClient(PlatformClient):
 
                 batch_size = random.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
                 await self._log(f"Batch: removing up to {batch_size} comment(s)... [daily: {self._daily_actions}/{DAILY_CAP}]")
-
-                # Count comments BEFORE deletion (used to verify batch succeeded)
-                count_before = await self._count_comments(page)
 
                 # Step 1: Click Select
                 select_pos = await page.evaluate("""
@@ -363,13 +367,17 @@ class InstagramClient(PlatformClient):
                     break
 
                 await page.mouse.click(select_pos["x"], select_pos["y"])
-                await page.wait_for_timeout(1500)
 
                 # Step 2: Click checkboxes using Playwright locators with force=True
                 # (bypasses the overlapping "Image with button" element).
-                # Iterate through all checkbox elements, scroll each into view.
+                # Wait for checkboxes to appear after clicking Select (SPA may be slow)
                 all_cbs = page.locator('[aria-label="Toggle checkbox"]')
-                total_cbs = await all_cbs.count()
+                total_cbs = 0
+                for _wait in range(5):
+                    await page.wait_for_timeout(1000)
+                    total_cbs = await all_cbs.count()
+                    if total_cbs > 0:
+                        break
                 clicked_count = 0
 
                 for i in range(min(total_cbs, batch_size)):
@@ -433,8 +441,8 @@ class InstagramClient(PlatformClient):
                 # Anchor on "Cancel" appearing — it only exists in the dialog.
                 confirmed = False
                 action_bar_y = delete_pos["y"]
-                for _attempt in range(10):  # poll up to ~3s
-                    await page.wait_for_timeout(300)
+                for _attempt in range(20):  # poll up to ~10s
+                    await page.wait_for_timeout(500)
                     # Check if Cancel is visible (dialog is open)
                     cancel_count = await page.get_by_text("Cancel", exact=True).count()
                     cancel_count += await page.get_by_text("Cancelar", exact=True).count()
@@ -470,9 +478,19 @@ class InstagramClient(PlatformClient):
                     await self._navigate_to_comments(page)
                     continue
 
+                # Confirmation dialog clicked — trust it as a successful deletion.
+                # Count comparison is unreliable because Instagram lazy-loads more
+                # comments on reload, causing the count to go UP even after deleting.
+                batch_deleted = selected_count if selected_count > 0 else clicked_count
+                total_deleted += batch_deleted
+                self._record_actions(batch_deleted)
+                consecutive_failures = 0
+                await self._report_progress(deleted=total_deleted)
+                await self._log(f"Batch done: {batch_deleted} deleted. Total: {total_deleted}")
+
                 await page.wait_for_timeout(3000)
 
-                # Step 5: Reload and verify deletion via fingerprints
+                # Reload page for next batch
                 if not await self._navigate_to_comments(page):
                     await self._log("Page failed to load after deletion", "error")
                     verified = await self._pause_and_retry(page)
@@ -484,28 +502,17 @@ class InstagramClient(PlatformClient):
                     if not await self._navigate_to_comments(page):
                         return total_deleted > 0
 
-                count_after = await self._count_comments(page)
+                # Check if any comments remain
+                count_after = 0
+                for _retry in range(3):
+                    count_after = await self._count_comments(page)
+                    if count_after > 0:
+                        break
+                    await page.wait_for_timeout(2000)
 
-                if count_after < count_before:
-                    batch_deleted = selected_count if selected_count > 0 else clicked_count
-                    total_deleted += batch_deleted
-                    self._record_actions(batch_deleted)
-                    consecutive_failures = 0
-                    await self._report_progress(deleted=total_deleted)
-                    await self._log(f"Batch done: {batch_deleted} deleted. Total: {total_deleted}")
-                elif count_after == 0:
+                if count_after == 0:
                     await self._log("No comments remaining — done!")
                     break
-                else:
-                    consecutive_failures += 1
-                    await self._log(
-                        f"Deletion not verified — count {count_before}→{count_after} (failure {consecutive_failures}/3)",
-                        "error"
-                    )
-                    if consecutive_failures >= 3:
-                        await self._log("Deletion is not working — stopping to avoid wasted actions", "error")
-                        break
-                    continue
 
                 # Inter-batch delay (20-45 seconds)
                 await self._inter_batch_delay()
@@ -567,7 +574,7 @@ class InstagramClient(PlatformClient):
             await self._log(f"On page: {page.url}")
 
             if "/accounts/login" in page.url:
-                await self._log("Redirected to login — session invalid", "error")
+                await self._log("Redirected to login — session may have expired, reconnect your account", "error")
                 return
 
             # The likes page may show a grid of thumbnails — scroll to load them
@@ -685,7 +692,7 @@ class InstagramClient(PlatformClient):
         await page.wait_for_timeout(3000)
 
         if "/accounts/login" in page.url:
-            await self._log("Redirected to login", "error")
+            await self._log("Redirected to login — session may have expired, reconnect your account", "error")
             return False
 
         page_text = await page.evaluate("() => document.body?.innerText?.substring(0, 200) || ''")
@@ -798,7 +805,7 @@ class InstagramClient(PlatformClient):
         """
         total_unliked = 0
         consecutive_failures = 0
-        page = await self.context.new_page()
+        page = await self._new_page()
 
         try:
             await self._log("Opening Your Activity > Likes...")

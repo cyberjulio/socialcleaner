@@ -22,6 +22,15 @@ export const api = {
   getSessions: () => request('/auth/sessions'),
   deleteSession: (id) => request(`/auth/sessions/${id}`, { method: 'DELETE' }),
 
+  // Browser login
+  startBrowserLogin: (platform) =>
+    request('/auth/browser-login', {
+      method: 'POST',
+      body: JSON.stringify({ platform }),
+    }),
+  getBrowserLoginStatus: (loginId) =>
+    request(`/auth/browser-login/${loginId}/status`),
+
   // Tasks
   createTask: (sessionId, targetType) =>
     request('/tasks', {

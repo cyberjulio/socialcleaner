@@ -242,7 +242,9 @@ class WorkerEngine:
                             (item_id, task_id, item_data["platform_id"], item_data["item_type"], item_data.get("metadata")),
                         )
                         count += 1
-                        await self._sink.publish(task_id, "log", {"message": f"Found item #{count}: {item_data['platform_id']}"})
+                        # Human-friendly log: skip internal batch IDs
+                        if not item_data["platform_id"].startswith("batch_"):
+                            await self._sink.publish(task_id, "log", {"message": f"Found item #{count}: {item_data['platform_id']}"})
                         if count % 20 == 0:
                             await db.commit()
                             await self._sink.publish(task_id, "scan_progress", {"found": count})
@@ -255,7 +257,8 @@ class WorkerEngine:
                     logger.error(f"Scan error: {scan_err}", exc_info=True)
                     await self._sink.publish(task_id, "log", {"message": f"SCAN ERROR: {scan_err}", "level": "error"})
 
-                await self._sink.publish(task_id, "log", {"message": f"Scan complete. Found {count} items."})
+                if count > 1:
+                    await self._sink.publish(task_id, "log", {"message": f"Scan complete. Found {count} items."})
 
                 await db.execute(
                     "UPDATE tasks SET total_items = ?, updated_at = datetime('now') WHERE id = ?",

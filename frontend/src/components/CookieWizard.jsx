@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api } from '../api.js'
 
 const PLATFORMS = {
@@ -11,13 +11,6 @@ const PLATFORMS = {
       { key: 'csrftoken', label: 'csrftoken', hint: '32-character token' },
       { key: 'ds_user_id', label: 'ds_user_id', hint: 'Your numeric user ID' },
     ],
-    instructions: [
-      'Open instagram.com in your browser and log in',
-      'Press F12 (or Cmd+Option+I on Mac) to open Developer Tools',
-      'Go to the Storage tab',
-      'In the left sidebar, expand Cookies > https://www.instagram.com (under Storage)',
-      'Find and copy the values for each cookie below',
-    ],
   },
   twitter: {
     name: 'X (Twitter)',
@@ -27,30 +20,18 @@ const PLATFORMS = {
       { key: 'auth_token', label: 'auth_token', hint: '40-character hex string' },
       { key: 'ct0', label: 'ct0', hint: 'Long alphanumeric CSRF token' },
     ],
-    instructions: [
-      'Open x.com in your browser and log in',
-      'Press F12 (or Cmd+Option+I on Mac) to open Developer Tools',
-      'Go to the Storage tab',
-      'In the left sidebar, expand Cookies > https://x.com (under Storage)',
-      'Find and copy the values for each cookie below',
-    ],
   },
 }
 
 function getConsoleSnippet(platform) {
-  // Snippet the user pastes into the browser console on instagram.com / x.com
-  // Reads all cookies (including httpOnly via the Cookie Store API or document.cookie fallback),
-  // prompts for any missing httpOnly ones, and copies the result to clipboard
   if (platform === 'instagram') {
     return `(async()=>{
   const needed=['sessionid','csrftoken','ds_user_id'];
   const found={};
-  // Try Cookie Store API first (can read httpOnly in some browsers)
   if(window.cookieStore){
     const all=await cookieStore.getAll();
     all.forEach(c=>{if(needed.includes(c.name))found[c.name]=c.value;});
   }
-  // Fallback to document.cookie for non-httpOnly
   document.cookie.split(';').forEach(c=>{
     const [k,...v]=c.trim().split('=');
     if(needed.includes(k)&&!found[k])found[k]=v.join('=');
@@ -95,11 +76,57 @@ export default function CookieWizard({ onConnected, onError }) {
   const [values, setValues] = useState({})
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
-  const [method, setMethod] = useState(null) // 'auto' | 'manual'
+  const [method, setMethod] = useState(null) // 'browser' | 'snippet' | 'manual'
   const [copied, setCopied] = useState(false)
   const [pasteValue, setPasteValue] = useState('')
+  const [browserStatus, setBrowserStatus] = useState(null) // 'waiting' | 'success' | 'timeout' | 'error'
+  const [browserError, setBrowserError] = useState(null)
+  const pollRef = useRef(null)
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [])
 
   const config = platform ? PLATFORMS[platform] : null
+
+  const handleBrowserLogin = async () => {
+    setLoading(true)
+    setBrowserStatus('waiting')
+    setBrowserError(null)
+    try {
+      const { login_id } = await api.startBrowserLogin(platform)
+
+      // Poll for status every 2 seconds
+      pollRef.current = setInterval(async () => {
+        try {
+          const status = await api.getBrowserLoginStatus(login_id)
+          if (status.status === 'success') {
+            clearInterval(pollRef.current)
+            pollRef.current = null
+            setBrowserStatus('success')
+            setResult({ username: status.username })
+            setLoading(false)
+            setTimeout(() => onConnected(), 1500)
+          } else if (status.status === 'timeout' || status.status === 'error') {
+            clearInterval(pollRef.current)
+            pollRef.current = null
+            setBrowserStatus(status.status)
+            setBrowserError(status.error)
+            setLoading(false)
+          }
+        } catch {
+          // Polling error — keep trying
+        }
+      }, 2000)
+    } catch (err) {
+      setBrowserStatus('error')
+      setBrowserError(err.message)
+      setLoading(false)
+    }
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -125,13 +152,11 @@ export default function CookieWizard({ onConnected, onError }) {
           {Object.entries(PLATFORMS).map(([key, p]) => (
             <button
               key={key}
-              onClick={() => { setPlatform(key); setValues({}); setMethod(null); setResult(null) }}
+              onClick={() => { setPlatform(key); setValues({}); setMethod(null); setResult(null); setBrowserStatus(null) }}
               className={`p-6 rounded-xl bg-gradient-to-br ${p.color} hover:opacity-90 transition text-white text-left`}
             >
               <div className="text-2xl font-bold">{p.name}</div>
-              <div className="text-sm opacity-80 mt-1">
-                {p.cookies.length} cookies needed
-              </div>
+              <div className="text-sm opacity-80 mt-1">Connect your account</div>
             </button>
           ))}
         </div>
@@ -156,12 +181,25 @@ export default function CookieWizard({ onConnected, onError }) {
 
         <div className="space-y-3">
           <button
-            onClick={() => setMethod('auto')}
+            onClick={() => setMethod('browser')}
             className="w-full p-5 bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-xl text-left transition"
           >
-            <div className="font-medium text-gray-100">Quick connect (recommended)</div>
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-gray-100">Log in with browser</span>
+              <span className="text-xs bg-green-900 text-green-300 px-2 py-0.5 rounded-full">recommended</span>
+            </div>
             <div className="text-sm text-gray-400 mt-1">
-              Run a snippet in the browser console on {config.domain} — auto-extracts cookies and copies them for you
+              Opens a browser window where you log in normally. Cookies are captured automatically.
+            </div>
+          </button>
+
+          <button
+            onClick={() => setMethod('snippet')}
+            className="w-full p-5 bg-gray-900 hover:bg-gray-800 border border-gray-800 rounded-xl text-left transition"
+          >
+            <div className="font-medium text-gray-100">Console snippet</div>
+            <div className="text-sm text-gray-400 mt-1">
+              Requires DevTools. Paste a snippet in the browser console on {config.domain} to extract cookies.
             </div>
           </button>
 
@@ -169,9 +207,9 @@ export default function CookieWizard({ onConnected, onError }) {
             onClick={() => setMethod('manual')}
             className="w-full p-5 bg-gray-900 hover:bg-gray-800 border border-gray-800 rounded-xl text-left transition"
           >
-            <div className="font-medium text-gray-100">Manual paste</div>
+            <div className="font-medium text-gray-100">Manual cookie paste</div>
             <div className="text-sm text-gray-400 mt-1">
-              Open DevTools, find cookies in the Storage tab, and paste them one by one
+              Requires DevTools. Find cookies in the Storage tab on {config.domain} and paste them one by one.
             </div>
           </button>
         </div>
@@ -190,8 +228,87 @@ export default function CookieWizard({ onConnected, onError }) {
     )
   }
 
-  // Auto (console snippet) method
-  if (method === 'auto') {
+  // Browser login method
+  if (method === 'browser') {
+    return (
+      <div>
+        <button
+          onClick={() => {
+            if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+            setMethod(null); setBrowserStatus(null); setBrowserError(null); setLoading(false)
+          }}
+          className="text-sm text-gray-400 hover:text-gray-200 mb-4"
+        >
+          &larr; Choose method
+        </button>
+
+        <h2 className="text-lg font-semibold mb-4">
+          Connect to {config.name} — Browser Login
+        </h2>
+
+        {!browserStatus && (
+          <div className="space-y-4">
+            <div className="p-4 bg-gray-900 rounded-lg border border-gray-800">
+              <p className="text-sm text-gray-300">
+                A browser window will open with the {config.name} login page.
+                Log in with your username and password as you normally would.
+                The window will close automatically once you're logged in.
+              </p>
+            </div>
+            <button
+              onClick={handleBrowserLogin}
+              disabled={loading}
+              className="w-full py-3 rounded-lg font-medium transition bg-blue-600 hover:bg-blue-500 text-white"
+            >
+              Open Login Window
+            </button>
+          </div>
+        )}
+
+        {browserStatus === 'waiting' && (
+          <div className="p-6 bg-gray-900 rounded-lg border border-gray-800 text-center">
+            <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+            <p className="text-gray-200 font-medium mb-2">Browser window opened</p>
+            <p className="text-sm text-gray-400">
+              Log in to {config.name} in the browser window, then come back here.
+              This page will update automatically.
+            </p>
+          </div>
+        )}
+
+        {browserStatus === 'timeout' && (
+          <div className="space-y-4">
+            <div className="p-4 bg-yellow-900/50 border border-yellow-700 rounded-lg text-yellow-200 text-sm">
+              Login timed out after 5 minutes. The browser window has been closed.
+            </div>
+            <button
+              onClick={() => { setBrowserStatus(null); setBrowserError(null) }}
+              className="px-4 py-2 text-sm bg-gray-700 hover:bg-gray-600 rounded-lg transition"
+            >
+              Try again
+            </button>
+          </div>
+        )}
+
+        {browserStatus === 'error' && (
+          <div className="space-y-4">
+            <div className="p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
+              {browserError || 'An error occurred during login.'}
+            </div>
+            <button
+              onClick={() => { setBrowserStatus(null); setBrowserError(null) }}
+              className="px-4 py-2 text-sm bg-gray-700 hover:bg-gray-600 rounded-lg transition"
+            >
+              Try again
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Console snippet method
+  if (method === 'snippet') {
     const snippet = getConsoleSnippet(platform)
 
     const handlePasteConnect = async () => {
@@ -218,7 +335,7 @@ export default function CookieWizard({ onConnected, onError }) {
         </button>
 
         <h2 className="text-lg font-semibold mb-4">
-          Connect to {config.name} — Quick Connect
+          Connect to {config.name} — Console Snippet
         </h2>
 
         <div className="space-y-4">
@@ -250,9 +367,6 @@ export default function CookieWizard({ onConnected, onError }) {
                 {copied ? 'Copied!' : 'Copy'}
               </button>
             </div>
-            <p className="text-xs text-gray-500 mt-2">
-              The snippet reads your cookies, prompts for any it can't access, and copies the result to your clipboard.
-            </p>
           </div>
 
           <div className="p-4 bg-gray-900 rounded-lg border border-gray-800">
@@ -306,9 +420,11 @@ export default function CookieWizard({ onConnected, onError }) {
           How to get your cookies:
         </h3>
         <ol className="text-sm text-gray-400 space-y-1 list-decimal list-inside">
-          {config.instructions.map((step, i) => (
-            <li key={i}>{step}</li>
-          ))}
+          <li>Open {config.domain} in your browser and log in</li>
+          <li>Press F12 (or Cmd+Option+I on Mac) to open DevTools</li>
+          <li>Go to the Storage tab</li>
+          <li>Expand Cookies &gt; https://{config.domain === 'x.com' ? 'x.com' : 'www.' + config.domain}</li>
+          <li>Find and copy the values for each cookie below</li>
         </ol>
       </div>
 

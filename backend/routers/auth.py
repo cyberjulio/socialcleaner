@@ -1,3 +1,4 @@
+import asyncio
 import random
 import uuid
 import logging
@@ -6,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from playwright.async_api import async_playwright
 
 from backend.database import get_db
-from backend.models import SessionCreate, SessionResponse
+from backend.models import SessionCreate, SessionResponse, BrowserLoginRequest, BrowserLoginStatus
 from backend.utils.crypto import encrypt_json
 from backend.platforms.user_agents import USER_AGENTS
 from backend.platforms.instagram import InstagramClient
@@ -14,6 +15,148 @@ from backend.platforms.twitter import TwitterClient
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# In-memory store for active browser login sessions
+_browser_logins: dict[str, BrowserLoginStatus] = {}
+
+BROWSER_LOGIN_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:148.0) "
+    "Gecko/20100101 Firefox/148.0"
+)
+
+
+@router.post("/browser-login")
+async def start_browser_login(data: BrowserLoginRequest):
+    """Launch a visible browser for the user to log in. Returns a login_id to poll."""
+    if data.platform not in ("instagram", "twitter"):
+        raise HTTPException(400, "Platform must be 'instagram' or 'twitter'")
+
+    login_id = str(uuid.uuid4())
+    _browser_logins[login_id] = BrowserLoginStatus(
+        login_id=login_id, status="waiting"
+    )
+
+    # Run the browser login flow in the background
+    asyncio.create_task(_browser_login_flow(login_id, data.platform))
+
+    return {"login_id": login_id}
+
+
+@router.get("/browser-login/{login_id}/status", response_model=BrowserLoginStatus)
+async def get_browser_login_status(login_id: str):
+    """Poll the status of a browser login session."""
+    status = _browser_logins.get(login_id)
+    if not status:
+        raise HTTPException(404, "Login session not found")
+    return status
+
+
+async def _browser_login_flow(login_id: str, platform: str):
+    """Background task: open visible browser, wait for login, save session."""
+    pw = await async_playwright().start()
+    browser = None
+    try:
+        browser = await pw.firefox.launch(headless=False)
+        context = await browser.new_context(
+            user_agent=BROWSER_LOGIN_UA,
+            viewport={"width": 1024, "height": 768},
+            locale="en-US",
+        )
+        page = await context.new_page()
+
+        if platform == "instagram":
+            await page.goto(
+                "https://www.instagram.com/accounts/login/",
+                wait_until="domcontentloaded",
+            )
+            required_cookies = {"sessionid", "csrftoken", "ds_user_id"}
+            domain = ".instagram.com"
+            cookie_url = "https://www.instagram.com"
+        else:
+            await page.goto(
+                "https://x.com/i/flow/login",
+                wait_until="domcontentloaded",
+            )
+            required_cookies = {"auth_token", "ct0"}
+            domain = ".x.com"
+            cookie_url = "https://x.com"
+
+        # Poll for successful login (required cookies appear)
+        cookie_dict = {}
+        logged_in = False
+        for _ in range(150):  # 5 minute timeout (150 × 2s)
+            if login_id not in _browser_logins:
+                return  # cancelled
+            await asyncio.sleep(2)
+            cookies = await context.cookies(cookie_url)
+            cookie_dict = {c["name"]: c["value"] for c in cookies}
+            if required_cookies.issubset(cookie_dict.keys()):
+                logged_in = True
+                break
+
+        if not logged_in:
+            _browser_logins[login_id] = BrowserLoginStatus(
+                login_id=login_id, status="timeout",
+                error="Login timed out after 5 minutes",
+            )
+            return
+
+        # Extract only the required cookies
+        ig_cookies = {k: cookie_dict[k] for k in required_cookies}
+
+        # Validate session
+        if platform == "instagram":
+            client = InstagramClient(context, ig_cookies)
+        else:
+            client = TwitterClient(context, ig_cookies)
+
+        try:
+            user_info = await client.validate_session()
+            username = user_info.get("username", "unknown")
+        except Exception as e:
+            logger.error(f"Browser login validation failed: {e}")
+            _browser_logins[login_id] = BrowserLoginStatus(
+                login_id=login_id, status="error",
+                error="Login detected but session validation failed",
+            )
+            return
+        finally:
+            await client.close()
+
+        # Store encrypted session (replace existing for same platform+username)
+        session_id = str(uuid.uuid4())
+        cookies_enc = encrypt_json(ig_cookies)
+
+        db = await get_db()
+        try:
+            await db.execute(
+                "DELETE FROM sessions WHERE platform = ? AND username = ?",
+                (platform, username),
+            )
+            await db.execute(
+                "INSERT INTO sessions (id, platform, cookies_enc, user_agent, username) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, platform, cookies_enc, BROWSER_LOGIN_UA, username),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+        _browser_logins[login_id] = BrowserLoginStatus(
+            login_id=login_id, status="success",
+            username=username, session_id=session_id,
+        )
+        logger.info(f"Browser login success: @{username}")
+
+    except Exception as e:
+        logger.error(f"Browser login error: {e}", exc_info=True)
+        _browser_logins[login_id] = BrowserLoginStatus(
+            login_id=login_id, status="error", error=str(e),
+        )
+    finally:
+        if browser:
+            await browser.close()
+        await pw.stop()
 
 
 @router.post("/connect", response_model=SessionResponse)
@@ -77,12 +220,16 @@ async def connect_session(data: SessionCreate, request: Request):
 
         username = user_info.get("username", "unknown")
 
-        # Store encrypted session
+        # Store encrypted session (replace existing for same platform+username)
         session_id = str(uuid.uuid4())
         cookies_enc = encrypt_json(data.cookies)
 
         db = await get_db()
         try:
+            await db.execute(
+                "DELETE FROM sessions WHERE platform = ? AND username = ?",
+                (data.platform, username),
+            )
             await db.execute(
                 "INSERT INTO sessions (id, platform, cookies_enc, user_agent, username) VALUES (?, ?, ?, ?, ?)",
                 (session_id, data.platform, cookies_enc, user_agent, username),

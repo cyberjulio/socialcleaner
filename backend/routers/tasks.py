@@ -27,6 +27,16 @@ async def create_task(data: TaskCreate):
             raise HTTPException(404, "Session not found or invalid")
         session = session[0]
 
+        # Prevent concurrent tasks for the same session
+        active = await db.execute_fetchall(
+            "SELECT id FROM tasks WHERE session_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')",
+            (data.session_id,),
+        )
+        if active:
+            raise HTTPException(
+                409, "Another task is already running for this account. Wait for it to finish or cancel it first."
+            )
+
         task_id = str(uuid.uuid4())
         await db.execute(
             "INSERT INTO tasks (id, session_id, platform, target_type) VALUES (?, ?, ?, ?)",

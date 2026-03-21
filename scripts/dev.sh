@@ -22,12 +22,12 @@ if [ ! -d frontend/node_modules ]; then
 fi
 
 # Kill any previous instances by port
-lsof -ti :8000 | xargs kill -9 2>/dev/null || true
-lsof -ti :5173 | xargs kill -9 2>/dev/null || true
+lsof -ti :8647 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+lsof -ti :5173 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
 sleep 1
 
 echo "Starting backend..."
-uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000 &
+uvicorn backend.main:app --reload --host 127.0.0.1 --port 8647 &
 BACKEND_PID=$!
 
 echo "Starting frontend..."
@@ -43,7 +43,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo ""
-echo "  Backend:  http://127.0.0.1:8000"
+echo "  Backend:  http://127.0.0.1:8647"
 echo "  Frontend: http://127.0.0.1:5173"
 echo ""
 echo "Press Ctrl+C to stop both servers."

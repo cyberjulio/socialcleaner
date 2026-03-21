@@ -14,6 +14,18 @@ class SessionResponse(BaseModel):
     valid: bool
 
 
+class BrowserLoginRequest(BaseModel):
+    platform: str  # 'instagram' | 'twitter'
+
+
+class BrowserLoginStatus(BaseModel):
+    login_id: str
+    status: str  # 'waiting' | 'success' | 'timeout' | 'error'
+    username: Optional[str] = None
+    session_id: Optional[str] = None
+    error: Optional[str] = None
+
+
 class TaskCreate(BaseModel):
     session_id: str
     target_type: str  # 'likes' | 'comments'

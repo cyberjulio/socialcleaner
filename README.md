@@ -125,10 +125,10 @@ directly:
 
 ```bash
 source venv/bin/activate
-uvicorn backend.main:app --host 127.0.0.1 --port 8000
+uvicorn backend.main:app --host 127.0.0.1 --port 8647
 ```
 
-Open http://127.0.0.1:8000 in your browser.
+Open http://127.0.0.1:8647 in your browser.
 
 ### Development mode
 

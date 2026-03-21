@@ -77,13 +77,17 @@ export default function TaskCard({ task: initialTask, onRefresh, onDelete, compa
         setLogs(prev => [...prev, { ts, level: 'info', msg: `Scan progress: ${data.found} found` }])
       } else if (eventType === 'scan_complete') {
         setTask(prev => ({ ...prev, total_items: data.total }))
-        setLogs(prev => [...prev, { ts, level: 'info', msg: `Scan complete: ${data.total} items` }])
+        if (data.total > 1) {
+          setLogs(prev => [...prev, { ts, level: 'info', msg: `Scan complete: ${data.total} items` }])
+        }
       } else if (eventType === 'item_deleted') {
         setTask(prev => ({ ...prev, deleted: prev.deleted + 1 }))
-        setLogs(prev => [...prev, { ts, level: 'ok', msg: `Deleted: ${data.platform_id}` }])
+        if (!data.platform_id?.startsWith('batch_')) {
+          setLogs(prev => [...prev, { ts, level: 'ok', msg: `Deleted: ${data.platform_id}` }])
+        }
       } else if (eventType === 'item_failed') {
         setTask(prev => ({ ...prev, failed: prev.failed + 1 }))
-        setLogs(prev => [...prev, { ts, level: 'error', msg: `Failed: ${data.item_id} — ${data.reason || ''}` }])
+        setLogs(prev => [...prev, { ts, level: 'error', msg: `Failed${data.reason ? ': ' + data.reason : ''}` }])
       } else if (eventType === 'rate_limited') {
         setNotice('Rate limited - backing off automatically')
         setLogs(prev => [...prev, { ts, level: 'warn', msg: data.message }])
