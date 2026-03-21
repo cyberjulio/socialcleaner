@@ -26,6 +26,7 @@ class CLIEventSink:
         self.failed = 0
         self.latest_message = ""
         self.task_status = "pending"
+        self.daily_cap_hit = False
         self.start_time = time.time()
 
     async def publish(self, task_id: str, event_type: str, data: dict) -> None:
@@ -48,8 +49,10 @@ class CLIEventSink:
         if event_type == "log":
             msg = data.get("message", "")
             self.latest_message = msg
-            level = data.get("level", "info")
-            if level == "error":
+            if "daily cap reached" in msg.lower():
+                self.daily_cap_hit = True
+                self.status = "[yellow]Daily cap reached[/yellow]"
+            elif data.get("level") == "error":
                 self.status = f"[red]{msg[:60]}[/red]"
         elif event_type == "batch_progress":
             self.deleted = data.get("deleted", self.deleted)
@@ -247,6 +250,9 @@ async def run_task_flow(target_type: str):
 
     # Step 4: Completion summary
     _show_summary(sink, target_type)
+    console.print("\n  [dim]Press any key to return to menu[/dim]")
+    from cli.display import read_key
+    read_key()
 
 
 async def _pause_task(task_id: str):
@@ -292,18 +298,21 @@ async def _toggle_pause(task_id: str, sink: CLIEventSink):
 
 def _show_summary(sink: CLIEventSink, target_type: str):
     """Show completion summary."""
-    if sink.task_status == "completed":
+    if sink.daily_cap_hit:
+        op = "Unliked" if target_type == "likes" else "Deleted"
+        console.print(
+            f"\n  [yellow]Daily cap reached (800 actions today).[/yellow]"
+        )
+        if sink.deleted > 0:
+            console.print(f"  [green]{op} {sink.deleted} items this session.[/green]")
+        console.print("  [dim]Run again tomorrow to continue.[/dim]")
+    elif sink.task_status == "completed":
         elapsed = time.time() - sink.start_time
         elapsed_str = str(timedelta(seconds=int(elapsed)))
         op = "Unliked" if target_type == "likes" else "Deleted"
         console.print(
             f"\n  [green]Done! {op} {sink.deleted} items in {elapsed_str}.[/green]"
         )
-        if sink.deleted >= 800:
-            console.print(
-                "  [yellow]Daily cap reached (800 actions today). "
-                "Run again tomorrow to continue.[/yellow]"
-            )
     elif sink.task_status == "failed":
         console.print(f"\n  [red]Task failed. {sink.latest_message}[/red]")
     elif sink.task_status not in ("completed", "failed"):

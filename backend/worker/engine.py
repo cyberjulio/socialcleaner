@@ -331,6 +331,8 @@ class WorkerEngine:
                                 (attempts, item["id"]),
                             )
 
+                except (DailyCapReached, asyncio.CancelledError):
+                    raise
                 except Exception as e:
                     error_msg = str(e)
                     logger.error(f"Error deleting item {item['id']}: {error_msg}")
