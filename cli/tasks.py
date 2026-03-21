@@ -1,5 +1,6 @@
 """Task execution flows — unlike posts / delete comments with rich TUI progress."""
 import asyncio
+import json
 import select
 import sys
 import termios
@@ -28,6 +29,22 @@ class CLIEventSink:
         self.start_time = time.time()
 
     async def publish(self, task_id: str, event_type: str, data: dict) -> None:
+        # Persist log events to DB so they appear on the web dashboard
+        if event_type == "log":
+            try:
+                from backend.database import get_db
+                db = await get_db()
+                try:
+                    await db.execute(
+                        "INSERT INTO events (task_id, event_type, payload) VALUES (?, ?, ?)",
+                        (task_id, event_type, json.dumps(data)),
+                    )
+                    await db.commit()
+                finally:
+                    await db.close()
+            except Exception:
+                pass
+
         if event_type == "log":
             msg = data.get("message", "")
             self.latest_message = msg
