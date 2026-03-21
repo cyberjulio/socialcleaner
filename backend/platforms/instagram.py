@@ -7,7 +7,7 @@ import random
 import time
 from typing import AsyncIterator
 from playwright.async_api import BrowserContext, Page
-from backend.platforms.base import PlatformClient
+from backend.platforms.base import PlatformClient, DailyCapReached
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,6 @@ class InstagramClient(PlatformClient):
                 f"Daily cap reached ({DAILY_CAP} actions). Marking task as completed.",
                 "warn",
             )
-            from backend.platforms.base import DailyCapReached
             raise DailyCapReached(f"Daily cap of {DAILY_CAP} actions reached")
 
         # Session time limit check
@@ -561,6 +560,8 @@ class InstagramClient(PlatformClient):
         except asyncio.CancelledError:
             await self._log(f"Cancelled. Deleted {total_deleted} comment(s) before stopping.")
             return total_deleted > 0
+        except DailyCapReached:
+            raise
         except Exception as e:
             await self._log(f"Error in batch delete: {e}", "error")
             return total_deleted > 0
@@ -1074,6 +1075,8 @@ class InstagramClient(PlatformClient):
         except asyncio.CancelledError:
             await self._log(f"Cancelled. Unliked {total_unliked} post(s) before stopping.")
             return total_unliked > 0
+        except DailyCapReached:
+            raise
         except Exception as e:
             await self._log(f"Error in batch unlike: {e}", "error")
             return total_unliked > 0
