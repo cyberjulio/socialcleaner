@@ -180,6 +180,10 @@ Accounts are shared between CLI and web — add once, use in either.
 
 ### Web Dashboard
 
+<p align="center">
+  <img src="assets/screenshot-web.png" alt="Web Dashboard" width="800">
+</p>
+
 - **Unlike All** -- removes all your likes, newest first.
 - **Delete Comments** -- removes all your comments.
 - **Cancel** -- stops a running task. Progress is saved and you can see

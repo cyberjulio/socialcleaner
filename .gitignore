@@ -9,6 +9,7 @@ dist/
 browser_data/
 .playwright/
 *.png
+!assets/*.png
 *.db-shm
 *.db-wal
 server.log
