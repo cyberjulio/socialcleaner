@@ -11,12 +11,14 @@ Instagram's web interface the same way you would manually, just faster.
 
 SocialCleaner can be used via the **CLI** (terminal menu) or the **Web Dashboard**.
 
-1. You connect your Instagram account — either by logging in through a
-   browser window (CLI) or by providing session cookies (Web).
+1. You connect your Instagram account by logging in through a browser window
+   that SocialCleaner opens for you (available in both CLI and Web Dashboard).
+   Alternatively, the Web Dashboard offers console snippet and manual cookie
+   paste as fallback methods.
 2. SocialCleaner opens a headless browser with your session and navigates to
    **Your Activity > Likes** or **Your Activity > Comments**.
-3. It selects items in small batches, clicks Unlike/Delete, confirms, and
-   verifies each removal before moving on.
+3. It selects items in small batches, clicks Unlike/Delete, and confirms
+   each removal before moving on.
 4. Progress is shown live — in a terminal progress bar (CLI) or streamed
    to the web dashboard via server-sent events.
 
@@ -29,7 +31,7 @@ in either interface.
 
 - Python 3.10 or later
 - Node.js 18 or later
-- A modern browser (Firefox recommended) with an active Instagram session
+- A display server (the browser login flow opens a visible Firefox window)
 
 ## Installation
 
@@ -152,13 +154,14 @@ For development (with hot reload on both servers):
 
 1. Click **+ Connect Account** on the dashboard.
 2. Choose **Instagram**.
-3. Follow the instructions to extract your session cookies. Two methods
-   are provided:
-   - **Bookmarklet** (recommended): drag the bookmarklet link to your
-     bookmarks bar, navigate to instagram.com while logged in, and click it.
-   - **Manual**: open DevTools > Application > Cookies on instagram.com and
-     copy the required values (`sessionid`, `csrftoken`, `ds_user_id`,
-     `ig_did`, `mid`).
+3. Choose a connection method:
+   - **Log in with browser** (recommended): opens a Firefox window where you
+     log in normally. Cookies are captured automatically.
+   - **Console snippet**: paste a JavaScript snippet into the browser console
+     on instagram.com to extract cookies.
+   - **Manual cookie paste**: open DevTools > Storage > Cookies on
+     instagram.com and copy the required values (`sessionid`, `csrftoken`,
+     `ds_user_id`).
 4. Once connected, your account appears on the dashboard with action buttons.
 
 Accounts are shared between CLI and web — add once, use in either.
@@ -222,14 +225,10 @@ socialcleaner/
 ## Important notes
 
 - This tool automates actions on your own account. Use it responsibly.
-- When you connect an account, SocialCleaner captures the user-agent
-  string from the browser you use to access the dashboard. The headless
-  browser that performs automation then uses that exact same user-agent.
-  This means the requests look identical to your normal browsing session,
-  reducing the chance of detection by the platform.
-  For best results, connect your account using the same browser where you
-  are logged into Instagram (e.g. if you use Firefox for Instagram, open
-  the SocialCleaner dashboard in Firefox too).
+- Sessions created via browser login (CLI or Web) use a generic Firefox
+  user-agent. Sessions created via cookie paste in the Web Dashboard
+  capture the user-agent from the browser used to access the dashboard,
+  so the headless browser's requests match your normal browsing session.
 - Instagram may temporarily restrict your account if you remove content
   too quickly. SocialCleaner includes rate limiting and automatic pauses,
   but there is always some risk.
