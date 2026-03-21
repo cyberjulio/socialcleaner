@@ -124,8 +124,9 @@ def show_about():
         "Bulk-remove likes and comments from\n"
         "Instagram. Self-hosted and private —\n"
         "your data never leaves your machine.\n\n"
-        "[dim]GitHub: github.com/socialcleaner[/dim]\n"
-        "[dim]License: MIT[/dim]"
+        "[dim]Created by: instagram.com/cyberjulio[/dim]\n"
+        "[dim]GitHub: github.com/cyberjulio/socialcleaner[/dim]\n"
+        "[dim]License: CC BY-NC 4.0[/dim]"
     )
     console.print()
     show_panel("About SocialCleaner", about_text, border_style="bright_blue")
