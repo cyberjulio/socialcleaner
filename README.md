@@ -73,10 +73,10 @@ directly:
 
 ```bash
 source venv/bin/activate
-uvicorn backend.main:app --host 127.0.0.1 --port 8647
+uvicorn backend.main:app --host 127.0.0.1 --port 8585
 ```
 
-Open http://127.0.0.1:8647 in your browser.
+Open http://127.0.0.1:8585 in your browser.
 
 ## Connecting your Instagram account
 

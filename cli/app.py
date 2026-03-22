@@ -69,7 +69,7 @@ async def start_web_dashboard():
     import webbrowser
     import asyncio
 
-    port = 8647
+    port = 8585
 
     # Check port availability
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
