@@ -42,8 +42,20 @@ echo "[5/5] Building web dashboard..."
 (cd frontend && npm install --silent && npm run build --silent)
 
 echo ""
-echo "Setup complete. Run with:"
+echo "Setup complete. Starting SocialCleaner..."
 echo ""
-echo "  source venv/bin/activate"
-echo "  python -m cli"
+
+source venv/bin/activate
+uvicorn backend.main:app --host 127.0.0.1 --port 8585 &
+SERVER_PID=$!
+
+sleep 2
+
+echo "SocialCleaner is running."
 echo ""
+echo "  Open http://localhost:8585/ in your browser to get started."
+echo ""
+echo "Press Ctrl+C to stop the server."
+echo ""
+
+wait $SERVER_PID

@@ -11,7 +11,7 @@ Instagram's web interface the same way you would manually, just faster.
 
 ## How it works
 
-SocialCleaner can be used via the **CLI** (terminal menu) or the **Web Dashboard**.
+SocialCleaner can be used via the **Web Dashboard** or the **CLI** (terminal menu).
 
 1. You connect your Instagram account by logging in through a browser window
    that SocialCleaner opens for you (available in both CLI and Web Dashboard).
@@ -46,7 +46,27 @@ cd socialcleaner
 
 ## Running
 
-### Option A: CLI (recommended)
+### Option A: Web Dashboard (recommended)
+
+<p align="center">
+  <img src="assets/screenshot-web.png" alt="Web Dashboard" width="800">
+</p>
+
+`setup.sh` starts the server automatically after installation. To start it again later:
+
+```bash
+source venv/bin/activate
+uvicorn backend.main:app --host 127.0.0.1 --port 8585
+```
+
+Open http://localhost:8585/ in your browser.
+
+- **Unlike All** — removes all your likes, newest first
+- **Delete Comments** — removes all your comments
+- **Cancel** — stops a running task; progress is saved and logs are kept
+- Tasks run in the background — close the tab and come back later
+
+### Option B: CLI
 
 ```bash
 source venv/bin/activate
@@ -63,37 +83,9 @@ python -m cli
 - Press **Q** to stop (progress is saved), **P** to pause/resume
 - If you stop mid-task, the CLI will offer to resume next time
 
-### Option B: Web Dashboard
-
-<p align="center">
-  <img src="assets/screenshot-web.png" alt="Web Dashboard" width="800">
-</p>
-
-Launch from the CLI (option 4), or start it directly:
-
-```bash
-source venv/bin/activate
-uvicorn backend.main:app --host 127.0.0.1 --port 8585
-```
-
-Open http://localhost:8585/ in your browser.
-
-- **Unlike All** — removes all your likes, newest first
-- **Delete Comments** — removes all your comments
-- **Cancel** — stops a running task; progress is saved and logs are kept
-- Tasks run in the background — close the tab and come back later
-
 ## Connecting your Instagram account
 
-### Via CLI (recommended)
-
-1. Launch the CLI: `python -m cli`
-2. Press **3** (Manage Accounts) then **1** (Add Instagram Account)
-3. A Firefox browser window opens to the Instagram login page
-4. Log in normally — handle 2FA if prompted
-5. The CLI detects when you're logged in and saves your session
-
-### Via Web Dashboard
+### Via Web Dashboard (recommended)
 
 1. Click **+ Connect Account** on the dashboard.
 2. Choose **Instagram**.
@@ -106,6 +98,14 @@ Open http://localhost:8585/ in your browser.
      instagram.com and copy the required values (`sessionid`, `csrftoken`,
      `ds_user_id`).
 4. Once connected, your account appears on the dashboard with action buttons.
+
+### Via CLI
+
+1. Launch the CLI: `python -m cli`
+2. Press **3** (Manage Accounts) then **1** (Add Instagram Account)
+3. A Firefox browser window opens to the Instagram login page
+4. Log in normally — handle 2FA if prompted
+5. The CLI detects when you're logged in and saves your session
 
 Accounts are shared between CLI and web — add once, use in either.
 
