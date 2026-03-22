@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.jpg" alt="SocialCleaner" width="600">
+  <img src="assets/SocialCleaner.png" alt="SocialCleaner" width="600">
 </p>
 
 A self-hosted tool for bulk-removing your likes and comments from Instagram
@@ -76,7 +76,7 @@ source venv/bin/activate
 uvicorn backend.main:app --host 127.0.0.1 --port 8585
 ```
 
-Open http://127.0.0.1:8585 in your browser.
+Open http://localhost:8585/ in your browser.
 
 ## Connecting your Instagram account
 
