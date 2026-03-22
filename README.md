@@ -44,9 +44,6 @@ cd socialcleaner
 ./setup.sh
 ```
 
-This installs all dependencies (Python, Playwright, frontend), generates a
-secret key, and builds the web dashboard. When it finishes, you're ready to go.
-
 ## Running
 
 ### Option A: CLI (recommended)
