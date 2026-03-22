@@ -32,8 +32,8 @@ in either interface.
 ## Requirements
 
 - Python 3.10 or later
-- Node.js 18 or later
 - A display server (the browser login flow opens a visible Firefox window)
+- Node.js 18 or later (only if you want the web dashboard)
 
 ## Installation
 
@@ -54,16 +54,14 @@ pip install -r requirements.txt
 # Install Playwright browsers (Firefox is used for automation)
 playwright install firefox
 
-# Install frontend dependencies
-cd frontend
-npm install
-cd ..
-
 # Create your environment file (required — the app won't start without it)
 cp .env.example .env
 # Generate and set a random secret key:
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 # Paste the output into .env as the value of CLEANER_SECRET_KEY
+
+# (Optional) Build the web dashboard — only needed if you want the web UI
+cd frontend && npm install && npm run build && cd ..
 ```
 
 ### Linux (Debian/Ubuntu)
@@ -88,16 +86,14 @@ pip install -r requirements.txt
 playwright install firefox
 playwright install-deps firefox
 
-# Install frontend dependencies
-cd frontend
-npm install
-cd ..
-
 # Create your environment file (required — the app won't start without it)
 cp .env.example .env
 # Generate and set a random secret key:
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 # Paste the output into .env as the value of CLEANER_SECRET_KEY
+
+# (Optional) Build the web dashboard — only needed if you want the web UI
+cd frontend && npm install && npm run build && cd ..
 ```
 
 ## Running
