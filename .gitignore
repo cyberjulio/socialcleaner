@@ -2,16 +2,23 @@ __pycache__/
 *.pyc
 .env
 *.db
+*.db-shm
+*.db-wal
 venv/
 node_modules/
 dist/
 .vite/
+.pytest_cache/
 browser_data/
 .playwright/
 *.png
 !assets/*.png
-*.db-shm
-*.db-wal
 server.log
+
+# Development artifacts
+CLAUDE.md
+docs/
 test_debug/
+test_debug_comments/
 test_unlike.py
+test_comments.py
