@@ -48,28 +48,28 @@ cd socialcleaner
 
 ### Option A: CLI (recommended)
 
-The CLI provides a menu-driven interface with no browser needed for setup:
-
 ```bash
 source venv/bin/activate
 python -m cli
 ```
 
-This launches an interactive menu:
+<p align="center">
+  <img src="assets/screenshot-cli.png" alt="CLI Interface" width="800">
+</p>
 
-```
-  1. [CLI] Unlike Instagram Posts
-  2. [CLI] Delete Instagram Comments
-  3. [CLI + WEB] Manage Accounts
-  4. [WEB] Start Web Dashboard
-  5. About
-  6. Quit
-```
+- **Unlike Instagram Posts** (option 1) — removes all your likes
+- **Delete Instagram Comments** (option 2) — removes all your comments
+- Live progress bar shows count, speed, and estimated time
+- Press **Q** to stop (progress is saved), **P** to pause/resume
+- If you stop mid-task, the CLI will offer to resume next time
 
 ### Option B: Web Dashboard
 
-You can also launch the web dashboard from the CLI (option 4), or start it
-directly:
+<p align="center">
+  <img src="assets/screenshot-web.png" alt="Web Dashboard" width="800">
+</p>
+
+Launch from the CLI (option 4), or start it directly:
 
 ```bash
 source venv/bin/activate
@@ -77,6 +77,11 @@ uvicorn backend.main:app --host 127.0.0.1 --port 8585
 ```
 
 Open http://localhost:8585/ in your browser.
+
+- **Unlike All** — removes all your likes, newest first
+- **Delete Comments** — removes all your comments
+- **Cancel** — stops a running task; progress is saved and logs are kept
+- Tasks run in the background — close the tab and come back later
 
 ## Connecting your Instagram account
 
@@ -103,34 +108,6 @@ Open http://localhost:8585/ in your browser.
 4. Once connected, your account appears on the dashboard with action buttons.
 
 Accounts are shared between CLI and web — add once, use in either.
-
-## Usage
-
-### CLI
-
-<p align="center">
-  <img src="assets/screenshot-cli.png" alt="CLI Interface" width="800">
-</p>
-
-- **Unlike Instagram Posts** (option 1) — removes all your likes
-- **Delete Instagram Comments** (option 2) — removes all your comments
-- Live progress bar shows count, speed, and estimated time
-- Press **Q** to stop (progress is saved), **P** to pause/resume
-- If you stop mid-task, the CLI will offer to resume next time
-
-### Web Dashboard
-
-<p align="center">
-  <img src="assets/screenshot-web.png" alt="Web Dashboard" width="800">
-</p>
-
-- **Unlike All** -- removes all your likes, newest first.
-- **Delete Comments** -- removes all your comments.
-- **Cancel** -- stops a running task. Progress is saved and you can see
-  historical tasks with their logs.
-
-Tasks run in the background. You can close the browser tab and come back
-later; the backend continues processing.
 
 ## Project structure
 
