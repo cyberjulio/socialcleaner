@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/SocialCleaner.png" alt="SocialCleaner" width="600">
+  <img src="assets/sc.png" alt="SocialCleaner" width="600">
 </p>
 
 A self-hosted tool for bulk-removing your likes and comments from Instagram
