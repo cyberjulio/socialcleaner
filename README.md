@@ -32,65 +32,20 @@ in either interface.
 ## Requirements
 
 - Python 3.10 or later
+- Node.js 18 or later
 - A display server (the browser login flow opens a visible Firefox window)
-- Node.js 18 or later (only if you want the web dashboard)
+- On Linux: `sudo apt-get install python3 python3-venv nodejs npm`
 
 ## Installation
 
-### macOS
-
 ```bash
-# Clone the repository
 git clone https://github.com/cyberjulio/socialcleaner.git
 cd socialcleaner
-
-# Create and activate a Python virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Install Playwright browsers (Firefox is used for automation)
-playwright install firefox
-
-# Create your environment file with a random secret key
-# (required — the app won't start without it)
-python3 -c "import secrets; print('CLEANER_SECRET_KEY=' + secrets.token_urlsafe(32))" > .env
-
-# (Optional) Build the web dashboard — only needed if you want the web UI
-cd frontend && npm install && npm run build && cd ..
+./setup.sh
 ```
 
-### Linux (Debian/Ubuntu)
-
-```bash
-# Install system dependencies for Playwright
-sudo apt-get update
-sudo apt-get install -y python3 python3-venv nodejs npm
-
-# Clone the repository
-git clone https://github.com/cyberjulio/socialcleaner.git
-cd socialcleaner
-
-# Create and activate a Python virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Install Playwright browsers and their system dependencies
-playwright install firefox
-playwright install-deps firefox
-
-# Create your environment file with a random secret key
-# (required — the app won't start without it)
-python3 -c "import secrets; print('CLEANER_SECRET_KEY=' + secrets.token_urlsafe(32))" > .env
-
-# (Optional) Build the web dashboard — only needed if you want the web UI
-cd frontend && npm install && npm run build && cd ..
-```
+This installs all dependencies (Python, Playwright, frontend), generates a
+secret key, and builds the web dashboard. When it finishes, you're ready to go.
 
 ## Running
 
