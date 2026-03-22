@@ -134,14 +134,6 @@ uvicorn backend.main:app --host 127.0.0.1 --port 8647
 
 Open http://127.0.0.1:8647 in your browser.
 
-### Development mode
-
-For development (with hot reload on both servers):
-
-```bash
-./scripts/dev.sh
-```
-
 ## Connecting your Instagram account
 
 ### Via CLI (recommended)
