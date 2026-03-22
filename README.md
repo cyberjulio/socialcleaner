@@ -54,11 +54,9 @@ pip install -r requirements.txt
 # Install Playwright browsers (Firefox is used for automation)
 playwright install firefox
 
-# Create your environment file (required — the app won't start without it)
-cp .env.example .env
-# Generate and set a random secret key:
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-# Paste the output into .env as the value of CLEANER_SECRET_KEY
+# Create your environment file with a random secret key
+# (required — the app won't start without it)
+python3 -c "import secrets; print('CLEANER_SECRET_KEY=' + secrets.token_urlsafe(32))" > .env
 
 # (Optional) Build the web dashboard — only needed if you want the web UI
 cd frontend && npm install && npm run build && cd ..
@@ -86,11 +84,9 @@ pip install -r requirements.txt
 playwright install firefox
 playwright install-deps firefox
 
-# Create your environment file (required — the app won't start without it)
-cp .env.example .env
-# Generate and set a random secret key:
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-# Paste the output into .env as the value of CLEANER_SECRET_KEY
+# Create your environment file with a random secret key
+# (required — the app won't start without it)
+python3 -c "import secrets; print('CLEANER_SECRET_KEY=' + secrets.token_urlsafe(32))" > .env
 
 # (Optional) Build the web dashboard — only needed if you want the web UI
 cd frontend && npm install && npm run build && cd ..
