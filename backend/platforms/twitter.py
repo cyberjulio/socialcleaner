@@ -146,23 +146,23 @@ class TwitterClient(PlatformClient):
                 vars_encoded = json.dumps(variables)
                 features_encoded = json.dumps(features)
 
-                resp = await page.evaluate(f"""
-                    async () => {{
-                        const url = '/i/api/graphql/{query_id}/Likes?variables=' +
-                            encodeURIComponent('{vars_encoded}') +
-                            '&features=' + encodeURIComponent('{features_encoded}');
-                        const r = await fetch(url, {{
-                            headers: {{
-                                'authorization': 'Bearer {BEARER_TOKEN}',
+                resp = await page.evaluate("""
+                    async ([queryId, varsEncoded, featuresEncoded, bearerToken]) => {
+                        const url = '/i/api/graphql/' + queryId + '/Likes?variables=' +
+                            encodeURIComponent(varsEncoded) +
+                            '&features=' + encodeURIComponent(featuresEncoded);
+                        const r = await fetch(url, {
+                            headers: {
+                                'authorization': 'Bearer ' + bearerToken,
                                 'x-csrf-token': document.cookie.match(/ct0=([^;]+)/)?.[1] || '',
                                 'x-twitter-auth-type': 'OAuth2Session',
                                 'x-twitter-active-user': 'yes',
                                 'content-type': 'application/json'
-                            }}
-                        }});
+                            }
+                        });
                         return r.json();
-                    }}
-                """)
+                    }
+                """, [query_id, vars_encoded, features_encoded, BEARER_TOKEN])
 
                 timeline = resp.get("data", {}).get("user", {}).get("result", {}).get("timeline_v2", resp.get("data", {}).get("user", {}).get("result", {}).get("timeline", {}))
                 instructions = timeline.get("timeline", {}).get("instructions", [])
@@ -244,23 +244,23 @@ class TwitterClient(PlatformClient):
                 vars_encoded = json.dumps(variables)
                 features_encoded = json.dumps(features)
 
-                resp = await page.evaluate(f"""
-                    async () => {{
-                        const url = '/i/api/graphql/{query_id}/UserTweetsAndReplies?variables=' +
-                            encodeURIComponent('{vars_encoded}') +
-                            '&features=' + encodeURIComponent('{features_encoded}');
-                        const r = await fetch(url, {{
-                            headers: {{
-                                'authorization': 'Bearer {BEARER_TOKEN}',
+                resp = await page.evaluate("""
+                    async ([queryId, varsEncoded, featuresEncoded, bearerToken]) => {
+                        const url = '/i/api/graphql/' + queryId + '/UserTweetsAndReplies?variables=' +
+                            encodeURIComponent(varsEncoded) +
+                            '&features=' + encodeURIComponent(featuresEncoded);
+                        const r = await fetch(url, {
+                            headers: {
+                                'authorization': 'Bearer ' + bearerToken,
                                 'x-csrf-token': document.cookie.match(/ct0=([^;]+)/)?.[1] || '',
                                 'x-twitter-auth-type': 'OAuth2Session',
                                 'x-twitter-active-user': 'yes',
                                 'content-type': 'application/json'
-                            }}
-                        }});
+                            }
+                        });
                         return r.json();
-                    }}
-                """)
+                    }
+                """, [query_id, vars_encoded, features_encoded, BEARER_TOKEN])
 
                 timeline = resp.get("data", {}).get("user", {}).get("result", {}).get("timeline_v2", resp.get("data", {}).get("user", {}).get("result", {}).get("timeline", {}))
                 instructions = timeline.get("timeline", {}).get("instructions", [])
@@ -304,44 +304,44 @@ class TwitterClient(PlatformClient):
                 query_id = self._query_ids.get("UnfavoriteTweet", "")
                 variables = json.dumps({"tweet_id": item["platform_id"]})
 
-                resp = await page.evaluate(f"""
-                    async () => {{
-                        const r = await fetch('/i/api/graphql/{query_id}/UnfavoriteTweet', {{
+                resp = await page.evaluate("""
+                    async ([queryId, variables, bearerToken]) => {
+                        const r = await fetch('/i/api/graphql/' + queryId + '/UnfavoriteTweet', {
                             method: 'POST',
-                            headers: {{
-                                'authorization': 'Bearer {BEARER_TOKEN}',
+                            headers: {
+                                'authorization': 'Bearer ' + bearerToken,
                                 'x-csrf-token': document.cookie.match(/ct0=([^;]+)/)?.[1] || '',
                                 'x-twitter-auth-type': 'OAuth2Session',
                                 'x-twitter-active-user': 'yes',
                                 'content-type': 'application/json'
-                            }},
-                            body: JSON.stringify({{ variables: {variables} }})
-                        }});
+                            },
+                            body: JSON.stringify({ variables: JSON.parse(variables) })
+                        });
                         return r.json();
-                    }}
-                """)
+                    }
+                """, [query_id, variables, BEARER_TOKEN])
                 return "errors" not in resp
 
             elif item["item_type"] == "comment":
                 query_id = self._query_ids.get("DeleteTweet", "")
                 variables = json.dumps({"tweet_id": item["platform_id"]})
 
-                resp = await page.evaluate(f"""
-                    async () => {{
-                        const r = await fetch('/i/api/graphql/{query_id}/DeleteTweet', {{
+                resp = await page.evaluate("""
+                    async ([queryId, variables, bearerToken]) => {
+                        const r = await fetch('/i/api/graphql/' + queryId + '/DeleteTweet', {
                             method: 'POST',
-                            headers: {{
-                                'authorization': 'Bearer {BEARER_TOKEN}',
+                            headers: {
+                                'authorization': 'Bearer ' + bearerToken,
                                 'x-csrf-token': document.cookie.match(/ct0=([^;]+)/)?.[1] || '',
                                 'x-twitter-auth-type': 'OAuth2Session',
                                 'x-twitter-active-user': 'yes',
                                 'content-type': 'application/json'
-                            }},
-                            body: JSON.stringify({{ variables: {variables} }})
-                        }});
+                            },
+                            body: JSON.stringify({ variables: JSON.parse(variables) })
+                        });
                         return r.json();
-                    }}
-                """)
+                    }
+                """, [query_id, variables, BEARER_TOKEN])
                 return "errors" not in resp
 
             return False

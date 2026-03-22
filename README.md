@@ -59,10 +59,11 @@ cd frontend
 npm install
 cd ..
 
-# Create your environment file
+# Create your environment file (required — the app won't start without it)
 cp .env.example .env
-# Edit .env and replace the secret key with a random string:
-#   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+# Generate and set a random secret key:
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+# Paste the output into .env as the value of CLEANER_SECRET_KEY
 ```
 
 ### Linux (Debian/Ubuntu)
@@ -92,10 +93,11 @@ cd frontend
 npm install
 cd ..
 
-# Create your environment file
+# Create your environment file (required — the app won't start without it)
 cp .env.example .env
-# Edit .env and replace the secret key with a random string:
-#   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+# Generate and set a random secret key:
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+# Paste the output into .env as the value of CLEANER_SECRET_KEY
 ```
 
 ## Running
@@ -305,6 +307,26 @@ Action blocks escalate with repeated violations:
 
 Continuing automated actions during a block extends its duration.
 SocialCleaner detects blocks and stops automatically to avoid this.
+
+## Security
+
+SocialCleaner is designed to run locally on your own machine. Your
+credentials never leave your computer.
+
+- **Encrypted storage**: Session cookies are encrypted at rest using
+  Fernet (AES-128-CBC + HMAC). The encryption key is derived from
+  `CLEANER_SECRET_KEY` in your `.env` file.
+- **No external connections**: The backend only binds to `127.0.0.1`.
+  No data is sent to any external server.
+- **Database permissions**: `cleaner.db` is created with owner-only
+  permissions (600) to prevent other local users from reading it.
+- **Secret key is required**: The app will not start without a
+  `CLEANER_SECRET_KEY` in `.env`. If you lose this key, stored sessions
+  cannot be recovered — you'll need to reconnect your accounts.
+
+Do not expose the web dashboard to the network (e.g., by binding to
+`0.0.0.0`). It has no authentication layer and is intended for
+single-user local use only.
 
 ## License
 

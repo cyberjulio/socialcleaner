@@ -1,10 +1,9 @@
 import os
-import secrets
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    secret_key: str = secrets.token_urlsafe(32)
+    secret_key: str
     host: str = "127.0.0.1"
     port: int = 8647
     db_path: str = "cleaner.db"

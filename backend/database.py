@@ -1,3 +1,5 @@
+import os
+
 import aiosqlite
 from backend.config import settings
 
@@ -73,3 +75,4 @@ async def init_db():
         await db.commit()
     finally:
         await db.close()
+    os.chmod(DB_PATH, 0o600)

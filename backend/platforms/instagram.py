@@ -214,21 +214,21 @@ class InstagramClient(PlatformClient):
     async def validate_session(self) -> dict:
         page = await self._new_page()
         try:
-            result = await page.evaluate(f"""
-                async () => {{
-                    try {{
-                        const r = await fetch('/api/v1/users/{self.user_id}/info/', {{
-                            headers: {{
-                                'X-CSRFToken': '{self.csrf_token}',
+            result = await page.evaluate("""
+                async ([userId, csrfToken]) => {
+                    try {
+                        const r = await fetch('/api/v1/users/' + userId + '/info/', {
+                            headers: {
+                                'X-CSRFToken': csrfToken,
                                 'X-IG-App-ID': '936619743392459',
                                 'X-Requested-With': 'XMLHttpRequest'
-                            }}
-                        }});
+                            }
+                        });
                         const data = await r.json();
                         return data?.user?.username || null;
-                    }} catch {{ return null; }}
-                }}
-            """)
+                    } catch { return null; }
+                }
+            """, [self.user_id, self.csrf_token])
             username = result or "unknown"
             logger.info(f"validate_session: username={username}")
             return {"username": username, "user_id": self.user_id}
