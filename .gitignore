@@ -18,6 +18,8 @@ server.log
 # Development artifacts
 CLAUDE.md
 docs/
+scripts/
+tests/
 test_debug/
 test_debug_comments/
 test_unlike.py
