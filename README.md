@@ -66,8 +66,6 @@ This launches an interactive menu:
   6. Quit
 ```
 
-Press a number to navigate — no Enter key needed.
-
 ### Option B: Web Dashboard
 
 You can also launch the web dashboard from the CLI (option 4), or start it

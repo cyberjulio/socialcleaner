@@ -9,7 +9,11 @@ console = Console()
 
 
 def read_key() -> str:
-    """Read a single keypress without requiring Enter."""
+    """Read a single keypress without requiring Enter.
+
+    Returns plain characters for normal keys.
+    Returns 'UP' / 'DOWN' for arrow keys, 'ENTER' for Enter/Return.
+    """
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
@@ -17,24 +21,56 @@ def read_key() -> str:
         ch = sys.stdin.read(1)
         if ch == "\x03":
             raise KeyboardInterrupt
+        if ch == "\x1b":
+            seq = sys.stdin.read(2)
+            if seq == "[A":
+                return "UP"
+            if seq == "[B":
+                return "DOWN"
+            return ch
+        if ch in ("\r", "\n"):
+            return "ENTER"
         return ch
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def show_menu(title: str, options: list[str], border_style: str = "cyan") -> str | None:
-    """Display a numbered menu and return the key pressed."""
-    lines = []
-    for i, option in enumerate(options, 1):
-        lines.append(f"  {i}. {option}")
+    """Display a menu with arrow-key navigation and number-key selection.
 
-    content = "\n".join(lines)
-    panel = Panel(content, title=title, border_style=border_style, padding=(1, 2))
-    console.print(panel)
-    console.print("  [dim]Press a number to select[/dim]\n")
+    Returns the 1-based index as a string (e.g. "1", "2") to match callers.
+    """
+    selected = 0
+    count = len(options)
 
-    key = read_key()
-    return key
+    while True:
+        lines = []
+        for i, option in enumerate(options):
+            if i == selected:
+                lines.append(f"  [bold cyan]> {i + 1}. {option}[/bold cyan]")
+            else:
+                lines.append(f"    {i + 1}. {option}")
+
+        content = "\n".join(lines)
+        panel = Panel(content, title=title, border_style=border_style, padding=(1, 2))
+
+        console.print(panel)
+
+        key = read_key()
+
+        if key == "UP":
+            selected = (selected - 1) % count
+        elif key == "DOWN":
+            selected = (selected + 1) % count
+        elif key == "ENTER":
+            return str(selected + 1)
+        elif key.isdigit() and 1 <= int(key) <= count:
+            return key
+
+        # Move cursor up to redraw the panel in place
+        # Panel height: top border + top padding + options + bottom padding + bottom border + trailing newline
+        panel_height = count + 5
+        console.print(f"\033[{panel_height}A", end="")
 
 
 def show_panel(title: str, content: str, border_style: str = "cyan"):
