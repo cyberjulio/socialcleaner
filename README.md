@@ -48,18 +48,18 @@ cd socialcleaner
 
 ### Option A: Web Dashboard (recommended)
 
+After running `setup.sh`, open your browser at http://localhost:8585/
+
 <p align="center">
   <img src="assets/screenshot-web.png" alt="Web Dashboard" width="800">
 </p>
 
-`setup.sh` starts the server automatically after installation. To start it again later:
+To start the server again later: To start it again later:
 
 ```bash
 source venv/bin/activate
 uvicorn backend.main:app --host 127.0.0.1 --port 8585
 ```
-
-Open http://localhost:8585/ in your browser.
 
 - **Unlike All** — removes all your likes, newest first
 - **Delete Comments** — removes all your comments
