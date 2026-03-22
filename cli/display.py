@@ -3,6 +3,7 @@ import sys
 import tty
 import termios
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 
 console = Console()
@@ -35,6 +36,16 @@ def read_key() -> str:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+def _build_menu_panel(title: str, options: list[str], selected: int, border_style: str) -> Panel:
+    lines = []
+    for i, option in enumerate(options):
+        if i == selected:
+            lines.append(f"  [bold cyan]> {i + 1}. {option}[/bold cyan]")
+        else:
+            lines.append(f"    {i + 1}. {option}")
+    return Panel("\n".join(lines), title=title, border_style=border_style, padding=(1, 2))
+
+
 def show_menu(title: str, options: list[str], border_style: str = "cyan") -> str | None:
     """Display a menu with arrow-key navigation and number-key selection.
 
@@ -43,34 +54,25 @@ def show_menu(title: str, options: list[str], border_style: str = "cyan") -> str
     selected = 0
     count = len(options)
 
-    while True:
-        lines = []
-        for i, option in enumerate(options):
-            if i == selected:
-                lines.append(f"  [bold cyan]> {i + 1}. {option}[/bold cyan]")
+    with Live(_build_menu_panel(title, options, selected, border_style),
+              console=console, refresh_per_second=30, transient=False) as live:
+        while True:
+            key = read_key()
+
+            if key == "UP":
+                selected = (selected - 1) % count
+            elif key == "DOWN":
+                selected = (selected + 1) % count
+            elif key == "ENTER":
+                live.update(_build_menu_panel(title, options, selected, border_style))
+                return str(selected + 1)
+            elif key.isdigit() and 1 <= int(key) <= count:
+                live.update(_build_menu_panel(title, options, int(key) - 1, border_style))
+                return key
             else:
-                lines.append(f"    {i + 1}. {option}")
+                continue
 
-        content = "\n".join(lines)
-        panel = Panel(content, title=title, border_style=border_style, padding=(1, 2))
-
-        console.print(panel)
-
-        key = read_key()
-
-        if key == "UP":
-            selected = (selected - 1) % count
-        elif key == "DOWN":
-            selected = (selected + 1) % count
-        elif key == "ENTER":
-            return str(selected + 1)
-        elif key.isdigit() and 1 <= int(key) <= count:
-            return key
-
-        # Move cursor up to redraw the panel in place
-        # Panel height: top border + top padding + options + bottom padding + bottom border + trailing newline
-        panel_height = count + 5
-        console.print(f"\033[{panel_height}A", end="")
+            live.update(_build_menu_panel(title, options, selected, border_style))
 
 
 def show_panel(title: str, content: str, border_style: str = "cyan"):
