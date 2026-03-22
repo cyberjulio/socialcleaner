@@ -172,6 +172,10 @@ Accounts are shared between CLI and web — add once, use in either.
 
 ### CLI
 
+<p align="center">
+  <img src="assets/screenshot-cli.png" alt="CLI Interface" width="800">
+</p>
+
 - **Unlike Instagram Posts** (option 1) — removes all your likes
 - **Delete Instagram Comments** (option 2) — removes all your comments
 - Live progress bar shows count, speed, and estimated time
