@@ -328,6 +328,35 @@ Do not expose the web dashboard to the network (e.g., by binding to
 `0.0.0.0`). It has no authentication layer and is intended for
 single-user local use only.
 
+## Disclaimer
+
+This software is provided "as is", without warranty of any kind, express
+or implied. Use it entirely at your own risk.
+
+By using SocialCleaner, you acknowledge and agree that:
+
+1. **You are solely responsible** for how you use this tool and for any
+   consequences that result from its use, including but not limited to
+   account restrictions, suspensions, or permanent bans imposed by
+   Instagram, Twitter/X, or any other platform.
+2. **This tool interacts with third-party platforms** in ways that may
+   violate their Terms of Service. The authors do not encourage or endorse
+   violating any platform's terms. It is your responsibility to review and
+   comply with the terms of any service you use this tool with.
+3. **The authors and contributors accept no responsibility** for any
+   damages, data loss, account loss, legal consequences, or other harm
+   arising from the use or misuse of this software.
+4. **No guarantee of functionality** is provided. Platform interfaces
+   change without notice, and this tool may stop working, behave
+   unexpectedly, or cause unintended actions on your accounts at any time.
+5. **You are responsible for your own data.** Session cookies and
+   credentials are stored locally on your machine. The authors are not
+   responsible for unauthorized access to your data resulting from
+   misconfiguration, system compromise, or any other cause.
+
+This project is not affiliated with, endorsed by, or sponsored by
+Instagram, Meta, Twitter/X, or any other platform.
+
 ## License
 
 This project is licensed under [CC BY-NC 4.0](LICENSE). You are free to
