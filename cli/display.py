@@ -1,4 +1,5 @@
 """Shared display components for the CLI."""
+import os
 import sys
 import tty
 import termios
@@ -7,6 +8,23 @@ from rich.live import Live
 from rich.panel import Panel
 
 console = Console()
+
+
+def _read_raw_key(fd: int) -> str:
+    """Read one keypress from an already-raw fd. Does NOT switch terminal mode."""
+    ch = os.read(fd, 1).decode("utf-8", errors="replace")
+    if ch == "\x03":
+        raise KeyboardInterrupt
+    if ch == "\x1b":
+        seq = os.read(fd, 2).decode("utf-8", errors="replace")
+        if seq == "[A":
+            return "UP"
+        if seq == "[B":
+            return "DOWN"
+        return ch
+    if ch in ("\r", "\n"):
+        return "ENTER"
+    return ch
 
 
 def read_key() -> str:
@@ -18,20 +36,8 @@ def read_key() -> str:
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
-        ch = sys.stdin.read(1)
-        if ch == "\x03":
-            raise KeyboardInterrupt
-        if ch == "\x1b":
-            seq = sys.stdin.read(2)
-            if seq == "[A":
-                return "UP"
-            if seq == "[B":
-                return "DOWN"
-            return ch
-        if ch in ("\r", "\n"):
-            return "ENTER"
-        return ch
+        tty.setcbreak(fd)
+        return _read_raw_key(fd)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -53,26 +59,30 @@ def show_menu(title: str, options: list[str], border_style: str = "cyan") -> str
     """
     selected = 0
     count = len(options)
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        with Live(_build_menu_panel(title, options, selected, border_style),
+                  console=console, refresh_per_second=30, transient=True) as live:
+            while True:
+                key = _read_raw_key(fd)
 
-    with Live(_build_menu_panel(title, options, selected, border_style),
-              console=console, refresh_per_second=30, transient=False) as live:
-        while True:
-            key = read_key()
+                if key == "UP":
+                    selected = (selected - 1) % count
+                elif key == "DOWN":
+                    selected = (selected + 1) % count
+                elif key == "ENTER":
+                    return str(selected + 1)
+                elif key.isdigit() and 1 <= int(key) <= count:
+                    live.update(_build_menu_panel(title, options, int(key) - 1, border_style))
+                    return key
+                else:
+                    continue
 
-            if key == "UP":
-                selected = (selected - 1) % count
-            elif key == "DOWN":
-                selected = (selected + 1) % count
-            elif key == "ENTER":
                 live.update(_build_menu_panel(title, options, selected, border_style))
-                return str(selected + 1)
-            elif key.isdigit() and 1 <= int(key) <= count:
-                live.update(_build_menu_panel(title, options, int(key) - 1, border_style))
-                return key
-            else:
-                continue
-
-            live.update(_build_menu_panel(title, options, selected, border_style))
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def show_panel(title: str, content: str, border_style: str = "cyan"):

@@ -18,11 +18,10 @@ async def main():
 
     await init_db()
 
-    console.clear()
-    console.print(BANNER)
-
     while True:
         try:
+            console.clear()
+            console.print(BANNER)
             key = show_menu(
                 "SocialCleaner",
                 [
@@ -54,8 +53,6 @@ async def main():
             elif key == "6":
                 console.print("\n  [cyan]Goodbye![/cyan]\n")
                 sys.exit(0)
-
-            console.print()
 
         except KeyboardInterrupt:
             console.print("\n  [cyan]Goodbye![/cyan]\n")

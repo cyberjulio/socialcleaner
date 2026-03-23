@@ -408,17 +408,18 @@ class InstagramClient(PlatformClient):
                 # Step 2: Click checkboxes using Playwright locators with force=True
                 # (bypasses the overlapping "Image with button" element).
                 # Wait for checkboxes to appear after clicking Select (SPA may be slow)
-                all_cbs = page.locator('[aria-label="Toggle checkbox"]')
-                total_cbs = 0
-                for _wait in range(5):
+                # Wait for checkboxes to appear, then snapshot them as stable handles.
+                # Using query_selector_all (not a live locator) so DOM re-renders
+                # between clicks don't shift indices and cause random selection.
+                cb_handles: list = []
+                for _wait in range(10):
                     await page.wait_for_timeout(1000)
-                    total_cbs = await all_cbs.count()
-                    if total_cbs > 0:
+                    cb_handles = await page.query_selector_all('[aria-label="Toggle checkbox"]')
+                    if cb_handles:
                         break
                 clicked_count = 0
 
-                for i in range(min(total_cbs, batch_size)):
-                    cb = all_cbs.nth(i)
+                for cb in cb_handles[:batch_size]:
                     try:
                         await cb.scroll_into_view_if_needed(timeout=2000)
                         await cb.click(force=True, timeout=3000)
@@ -428,8 +429,13 @@ class InstagramClient(PlatformClient):
                         continue
 
                 if clicked_count == 0:
-                    await self._log("No checkboxes found — done or page error", "warn")
-                    break
+                    await self._log("No checkboxes found — retrying...", "warn")
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        await self._log("Too many failures, stopping", "error")
+                        break
+                    await self._navigate_to_comments(page)
+                    continue
 
                 # Read how many Instagram actually registered
                 selected_count = await self._read_ui_selected(page)
@@ -539,13 +545,14 @@ class InstagramClient(PlatformClient):
                     if not await self._navigate_to_comments(page):
                         return total_deleted > 0
 
-                # Check if any comments remain
+                # Check if any comments remain — SPA needs up to 9s to render after
+                # domcontentloaded, so retry generously before concluding we're done.
                 count_after = 0
-                for _retry in range(3):
+                for _retry in range(5):
                     count_after = await self._count_comments(page)
                     if count_after > 0:
                         break
-                    await page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(3000)
 
                 if count_after == 0:
                     await self._log("No comments remaining — done!")
