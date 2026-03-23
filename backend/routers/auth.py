@@ -270,6 +270,16 @@ async def list_sessions():
 async def delete_session(session_id: str):
     db = await get_db()
     try:
+        # Delete dependent records before the session (foreign key constraints)
+        task_rows = await db.execute_fetchall(
+            "SELECT id FROM tasks WHERE session_id = ?", (session_id,)
+        )
+        for row in task_rows:
+            task_id = row["id"]
+            await db.execute("DELETE FROM events WHERE task_id = ?", (task_id,))
+            await db.execute("DELETE FROM items WHERE task_id = ?", (task_id,))
+        await db.execute("DELETE FROM tasks WHERE session_id = ?", (session_id,))
+        await db.execute("DELETE FROM daily_actions WHERE session_id = ?", (session_id,))
         await db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         await db.commit()
         return {"ok": True}
