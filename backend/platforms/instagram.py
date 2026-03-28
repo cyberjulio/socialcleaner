@@ -347,10 +347,111 @@ class InstagramClient(PlatformClient):
             return await self._batch_delete_comments()
         return False
 
+    async def _click_select_button(self, page: Page) -> bool:
+        """Find and click the 'Select' button. Returns True if clicked."""
+        select_pos = await page.evaluate("""
+            () => {
+                const els = document.querySelectorAll('span, button, [role="button"], a');
+                for (const el of els) {
+                    const text = el.textContent?.trim().toLowerCase();
+                    if (text === 'select' || text === 'selecionar') {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                        }
+                    }
+                }
+                return null;
+            }
+        """)
+        if not select_pos:
+            return False
+        await page.mouse.click(select_pos["x"], select_pos["y"])
+        return True
+
+    async def _find_delete_dialog_button(self, page: Page) -> object | None:
+        """
+        Find the Delete button inside a confirmation dialog (not the action bar).
+        Returns the Playwright element handle if found, None otherwise.
+
+        Detection strategy: look for a dialog/overlay container, then find the
+        Delete button inside it. Also fall back to position-based detection
+        (dialog buttons are in the center of the viewport, action bar is at bottom).
+        """
+        # Strategy 1: Look for a dialog/role="dialog" container with a Delete button
+        dialog_btn = await page.evaluate("""
+            () => {
+                // Check for role="dialog" or common dialog containers
+                const dialogs = document.querySelectorAll(
+                    '[role="dialog"], [role="alertdialog"], ' +
+                    'div[style*="position: fixed"], div[style*="position:fixed"]'
+                );
+                for (const dialog of dialogs) {
+                    const rect = dialog.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) continue;
+                    // Look for Delete/Excluir button inside the dialog
+                    const buttons = dialog.querySelectorAll('button, [role="button"], span, div');
+                    for (const btn of buttons) {
+                        const text = btn.textContent?.trim();
+                        if (text === 'Delete' || text === 'Excluir') {
+                            const btnRect = btn.getBoundingClientRect();
+                            if (btnRect.width > 0 && btnRect.height > 0) {
+                                return {x: btnRect.x + btnRect.width/2, y: btnRect.y + btnRect.height/2};
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
+        """)
+        if dialog_btn:
+            return dialog_btn
+
+        # Strategy 2: Position-based — find Delete buttons in the top 60% of viewport
+        # (action bar Delete sits at ~78% height, dialog Delete at ~35%)
+        pos = await page.evaluate("""
+            () => {
+                const vh = window.innerHeight;
+                const candidates = [];
+                const els = document.querySelectorAll('button, [role="button"], span, div');
+                for (const el of els) {
+                    const text = el.textContent?.trim();
+                    if (text !== 'Delete' && text !== 'Excluir') continue;
+                    if (el.children.length > 2) continue;  // skip containers
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) continue;
+                    if (rect.height > 80) continue;  // skip large containers
+                    const cy = rect.y + rect.height / 2;
+                    // Must be in top 60% of viewport (dialog area, not action bar)
+                    if (cy > vh * 0.6) continue;
+                    // Prefer buttons closest to viewport center
+                    const cx = window.innerWidth / 2;
+                    const dist = Math.sqrt(Math.pow(rect.x + rect.width/2 - cx, 2) + Math.pow(cy - vh/2, 2));
+                    candidates.push({x: rect.x + rect.width/2, y: cy, dist});
+                }
+                candidates.sort((a, b) => a.dist - b.dist);
+                return candidates.length > 0 ? candidates[0] : null;
+            }
+        """)
+        return pos
+
+    async def _click_delete_dialog(self, page: Page, timeout_ms: int = 10000) -> bool:
+        """Poll for and click the Delete confirmation dialog button. Returns True if clicked."""
+        polls = timeout_ms // 500
+        for _ in range(polls):
+            await page.wait_for_timeout(500)
+            pos = await self._find_delete_dialog_button(page)
+            if pos:
+                await page.mouse.click(pos["x"], pos["y"])
+                return True
+        return False
+
     async def _batch_delete_comments(self) -> bool:
         """
-        Delete comments in batches of 20-25, with session/daily limits,
-        action block detection, and human-like timing.
+        Delete comments using sub-batches. Instagram shows a "Delete comments?"
+        dialog after selecting ~3 checkboxes, so we work with that constraint:
+        select a few → confirm dialog → repeat without reloading, until we've
+        deleted a full batch (20-25), then reload for the next batch.
         """
         total_deleted = 0
         consecutive_failures = 0
@@ -377,140 +478,113 @@ class InstagramClient(PlatformClient):
             await self._log("Comments found, starting batch deletion...")
 
             while not self._cancelled:
-                # Enforce session time and daily cap limits
                 await self._check_session_limits()
 
                 batch_size = random.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
+                batch_deleted = 0
                 await self._log(f"Batch: removing up to {batch_size} comment(s)... [daily: {self._daily_actions}/{DAILY_CAP}]")
 
-                # Step 1: Click Select
-                select_pos = await page.evaluate("""
-                    () => {
-                        const els = document.querySelectorAll('span, button, [role="button"], a');
-                        for (const el of els) {
-                            const text = el.textContent?.trim().toLowerCase();
-                            if (text === 'select' || text === 'selecionar') {
-                                const rect = el.getBoundingClientRect();
-                                if (rect.width > 0 && rect.height > 0) {
-                                    return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
-                                }
-                            }
-                        }
-                        return null;
-                    }
-                """)
-                if not select_pos:
+                # Step 1: Scroll down to force Instagram to lazy-load more comments
+                # into the DOM before entering selection mode.
+                for _scroll in range(5):
+                    await page.evaluate("window.scrollBy(0, 600)")
+                    await page.wait_for_timeout(800)
+                # Scroll back to top so Select button is visible
+                await page.evaluate("window.scrollTo(0, 0)")
+                await page.wait_for_timeout(500)
+
+                # Step 2: Click Select button
+                if not await self._click_select_button(page):
                     await self._log("Could not find 'Select' button", "error")
-                    break
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        break
+                    await self._navigate_to_comments(page)
+                    await page.wait_for_timeout(2000)
+                    continue
 
-                await page.mouse.click(select_pos["x"], select_pos["y"])
-
-                # Step 2: Click checkboxes using Playwright locators with force=True
-                # (bypasses the overlapping "Image with button" element).
-                # Wait for checkboxes to appear after clicking Select (SPA may be slow)
-                # Wait for checkboxes to appear, then snapshot them as stable handles.
-                # Using query_selector_all (not a live locator) so DOM re-renders
-                # between clicks don't shift indices and cause random selection.
+                # Step 3: Wait for checkboxes to appear
                 cb_handles: list = []
                 for _wait in range(10):
                     await page.wait_for_timeout(1000)
                     cb_handles = await page.query_selector_all('[aria-label="Toggle checkbox"]')
                     if cb_handles:
                         break
-                clicked_count = 0
 
+                if not cb_handles:
+                    await self._log("No checkboxes appeared — retrying...", "warn")
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        break
+                    await self._navigate_to_comments(page)
+                    await page.wait_for_timeout(2000)
+                    continue
+
+                await self._log(f"Found {len(cb_handles)} checkbox(es) in DOM")
+
+                # Step 4: Click all checkboxes as fast as possible — no dialog
+                # check between clicks. The dialog may appear mid-loop but
+                # force=True clicks still land on checkboxes underneath overlays.
+                clicked_count = 0
                 for cb in cb_handles[:batch_size]:
                     try:
                         await cb.scroll_into_view_if_needed(timeout=2000)
                         await cb.click(force=True, timeout=3000)
                         clicked_count += 1
-                        await page.wait_for_timeout(random.randint(CLICK_DELAY_MIN, CLICK_DELAY_MAX))
+                        # Minimal delay — just enough to not look robotic
+                        await page.wait_for_timeout(random.randint(80, 200))
                     except Exception:
                         continue
 
                 if clicked_count == 0:
-                    await self._log("No checkboxes found — retrying...", "warn")
+                    await self._log("No checkboxes could be clicked — retrying...", "warn")
                     consecutive_failures += 1
                     if consecutive_failures >= 3:
-                        await self._log("Too many failures, stopping", "error")
                         break
                     await self._navigate_to_comments(page)
+                    await page.wait_for_timeout(2000)
                     continue
 
                 # Read how many Instagram actually registered
                 selected_count = await self._read_ui_selected(page)
                 if selected_count == 0:
-                    selected_count = clicked_count  # fallback if UI text not found
+                    selected_count = clicked_count
                 await self._log(f"Selected {selected_count} comment(s)")
+                batch_deleted = selected_count
 
                 # Optional reading pause before action
                 await self._reading_pause()
 
-                # Step 3: Click Delete in the bottom action bar.
-                # Only target interactive elements and use innerText to avoid
-                # matching parent wrappers via textContent.
-                delete_pos = await page.evaluate("""
-                    () => {
-                        const vh = window.innerHeight;
-                        const els = document.querySelectorAll('button, [role="button"]');
-                        const candidates = [];
-                        for (const el of els) {
-                            const text = (el.innerText || el.textContent || '').trim();
-                            if (text !== 'Delete' && text !== 'Excluir') continue;
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width <= 0 || rect.height <= 0) continue;
-                            candidates.push({
-                                x: rect.x + rect.width/2,
-                                y: rect.y + rect.height/2,
-                                bottomDist: Math.abs(rect.bottom - vh),
-                            });
+                # Step 5: Handle the confirmation dialog.
+                # The dialog may already be showing (auto-triggered by checkbox
+                # selection) or we may need to trigger it via the action bar Delete.
+                confirmed = await self._click_delete_dialog(page, timeout_ms=5000)
+
+                if not confirmed:
+                    # Dialog not auto-showing — click the action bar Delete to trigger it
+                    action_bar_delete = await page.evaluate("""
+                        () => {
+                            const vh = window.innerHeight;
+                            const els = document.querySelectorAll('button, [role="button"], span, div');
+                            for (const el of els) {
+                                const text = el.textContent?.trim();
+                                if (text !== 'Delete' && text !== 'Excluir') continue;
+                                if (el.children.length > 2) continue;
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width <= 0 || rect.height <= 0) continue;
+                                const cy = rect.y + rect.height / 2;
+                                if (cy > vh * 0.6) {
+                                    return {x: rect.x + rect.width/2, y: cy};
+                                }
+                            }
+                            return null;
                         }
-                        if (candidates.length === 0) return null;
-                        // Prefer the element closest to the bottom (action bar position)
-                        candidates.sort((a, b) => a.bottomDist - b.bottomDist);
-                        return candidates[0];
-                    }
-                """)
-                if not delete_pos:
-                    await self._log("Could not find Delete button in action bar", "error")
-                    break
-
-                await self._log(f"Clicking Delete at ({delete_pos['x']:.0f}, {delete_pos['y']:.0f})")
-                await page.mouse.click(delete_pos["x"], delete_pos["y"])
-
-                # Step 4: Wait for the confirmation dialog then click its Delete.
-                # Use Playwright's native .click(force=True) — dispatches a real CDP
-                # mouse event (isTrusted=true), unlike el.click() or mouse.click().
-                # Anchor on "Cancel" appearing — it only exists in the dialog.
-                confirmed = False
-                action_bar_y = delete_pos["y"]
-                for _attempt in range(20):  # poll up to ~10s
-                    await page.wait_for_timeout(500)
-                    # Check if Cancel is visible (dialog is open)
-                    cancel_count = await page.get_by_text("Cancel", exact=True).count()
-                    cancel_count += await page.get_by_text("Cancelar", exact=True).count()
-                    if cancel_count == 0:
-                        continue
-                    # Dialog open — find Delete buttons not at the action bar Y
-                    for label in ["Delete", "Excluir"]:
-                        candidates = page.get_by_text(label, exact=True)
-                        n = await candidates.count()
-                        for i in range(n):
-                            el = candidates.nth(i)
-                            box = await el.bounding_box()
-                            if not box:
-                                continue
-                            cy = box["y"] + box["height"] / 2
-                            if abs(cy - action_bar_y) < 30:
-                                continue  # skip action bar button
-                            await self._log(f"Clicking confirm at ({box['x']+box['width']/2:.0f}, {cy:.0f})")
-                            await el.click(force=True)
-                            confirmed = True
-                            break
-                        if confirmed:
-                            break
-                    if confirmed:
-                        break
+                    """)
+                    if action_bar_delete:
+                        await self._log("Clicking action bar Delete to trigger dialog...")
+                        await page.mouse.click(action_bar_delete["x"], action_bar_delete["y"])
+                        await page.wait_for_timeout(1000)
+                        confirmed = await self._click_delete_dialog(page, timeout_ms=5000)
 
                 if not confirmed:
                     await self._log("No confirmation dialog found", "warn")
@@ -519,21 +593,18 @@ class InstagramClient(PlatformClient):
                         await self._log("Too many failures, stopping", "error")
                         break
                     await self._navigate_to_comments(page)
+                    await page.wait_for_timeout(2000)
                     continue
 
-                # Confirmation dialog clicked — trust it as a successful deletion.
-                # Count comparison is unreliable because Instagram lazy-loads more
-                # comments on reload, causing the count to go UP even after deleting.
-                batch_deleted = selected_count if selected_count > 0 else clicked_count
+                # Batch succeeded
                 total_deleted += batch_deleted
                 await self._record_actions(batch_deleted)
                 consecutive_failures = 0
                 await self._report_progress(deleted=total_deleted)
                 await self._log(f"Batch done: {batch_deleted} deleted. Total: {total_deleted}")
 
-                await page.wait_for_timeout(3000)
-
                 # Reload page for next batch
+                await page.wait_for_timeout(2000)
                 if not await self._navigate_to_comments(page):
                     await self._log("Page failed to load after deletion", "error")
                     verified = await self._pause_and_retry(page)
@@ -545,8 +616,7 @@ class InstagramClient(PlatformClient):
                     if not await self._navigate_to_comments(page):
                         return total_deleted > 0
 
-                # Check if any comments remain — SPA needs up to 9s to render after
-                # domcontentloaded, so retry generously before concluding we're done.
+                # Check if any comments remain
                 count_after = 0
                 for _retry in range(5):
                     count_after = await self._count_comments(page)
@@ -558,7 +628,7 @@ class InstagramClient(PlatformClient):
                     await self._log("No comments remaining — done!")
                     break
 
-                # Inter-batch delay (20-45 seconds)
+                # Inter-batch delay
                 await self._inter_batch_delay()
 
             await self._log(f"Batch delete finished. Total deleted: {total_deleted}")
